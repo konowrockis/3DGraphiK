@@ -1,0 +1,32 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CudaCompile Include="rasterizer.cu" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Assets">
+      <UniqueIdentifier>{1b680623-efd3-4506-a8de-752e38e0761a}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="ModelLoader.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ModelLoader.h" />
+    <ClInclude Include="rasterizer.h" />
+    <ClInclude Include="structs.h" />
+    <ClInclude Include="VectorUtils.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Assets\mushroom.off">
+      <Filter>Assets</Filter>
+    </None>
+    <None Include="Assets\teapot.off">
+      <Filter>Assets</Filter>
+    </None>
+    <None Include="Assets\test.off">
+      <Filter>Assets</Filter>
+    </None>
+  </ItemGroup>
+</Project>

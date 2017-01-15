@@ -11,6 +11,8 @@ using SharpDX.DXGI;
 using SharpDX.Direct3D9;
 using SharpDX.Mathematics.Interop;
 using System.Windows.Media.Media3D;
+using System.Runtime.InteropServices;
+using static GraphiK3D.Rendering.Renderer;
 
 namespace GraphiK3D
 {
@@ -20,56 +22,41 @@ namespace GraphiK3D
         public const int Height = 1024;
         public const int Total = Width * Height;
 
+        [DllImport("3DGraphiK.CudaRasterizer.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void Init(IntPtr device);
+
+        [DllImport("3DGraphiK.CudaRasterizer.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr CreateModel(float3[] vertices, float3[] normals, float3[] colors, int[] indices, int numOfVertices, int numOfFaces);
+
+        [DllImport("3DGraphiK.CudaRasterizer.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void SetTransformation(float[] transformation, float3 camera);
+
+        [DllImport("3DGraphiK.CudaRasterizer.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void FreeRasterizer();
+
+        [DllImport("3DGraphiK.CudaRasterizer.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void FreeModel(IntPtr model);
+
+        [DllImport("3DGraphiK.CudaRasterizer.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void Resize(int w, int h, IntPtr backBufSurface);
+
+        [DllImport("3DGraphiK.CudaRasterizer.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void Begin();
+
+        [DllImport("3DGraphiK.CudaRasterizer.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void End();
+
+        [DllImport("3DGraphiK.CudaRasterizer.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void DrawModel(IntPtr model);
+
         public SimpleD3D9()
         {
         }
-
-        //[Kernel]
-        //public void Kernel(deviceptr<float4> pos, float time)
-        //{
-        //    var x = blockIdx.x * blockDim.x + threadIdx.x;
-        //    var y = blockIdx.y * blockDim.y + threadIdx.y;
-
-        //    var u = ((float)x) / ((float)Width);
-        //    var v = ((float)y) / ((float)Height);
-        //    u = u * 2.0f - 1.0f;
-        //    v = v * 2.0f - 1.0f;
-
-        //    const float freq = 4.0f;
-        //    var w = LibDevice.__nv_sinf(u * freq + time) * LibDevice.__nv_cosf(v * freq + time) * 0.5f;
-
-        //    pos[y * Width + x] = new float4(u, w, v, LibDevice.__nv_uint_as_float(0xff00ff00));
-        //}
-
-        //unsafe public void Update(IntPtr vbRes, float time)
-        //{
-        //    // 1. map resource to cuda space, means lock to cuda space
-        //    var vbRes1 = vbRes;
-        //    CUDAInterop.cuSafeCall(CUDAInterop.cuGraphicsMapResources(1, &vbRes1, IntPtr.Zero));
-
-        //    // 2. get memory pointer from mapped resource
-        //    var vbPtr = IntPtr.Zero;
-        //    var vbSize = IntPtr.Zero;
-        //    CUDAInterop.cuSafeCall(CUDAInterop.cuGraphicsResourceGetMappedPointer(&vbPtr, &vbSize, vbRes1));
-
-        //    // 3. create device pointer, and run the kernel
-        //    var pos = new deviceptr<float4>(vbPtr);
-        //    GPULaunch(Kernel, LaunchParam, pos, time);
-
-        //    // 4. unmap resource, means unlock, so that DirectX can then use it again
-        //    CUDAInterop.cuSafeCall(CUDAInterop.cuGraphicsUnmapResources(1u, &vbRes1, IntPtr.Zero));
-        //}
-
-        //static void UnregisterVerticesResource(IntPtr res)
-        //{
-        //    CUDAInterop.cuSafeCall(CUDAInterop.cuGraphicsUnregisterResource(res));
-        //}
-
+        
         public static unsafe void Run()
         {
             var form = new RenderForm("SimpleD3D9 by C#") { ClientSize = new Size(1024, 768) };
 
-            
             var device = new D3D9Device(
                 new Direct3D(),
                 0,
@@ -78,20 +65,10 @@ namespace GraphiK3D
                 CreateFlags.HardwareVertexProcessing,
                 new SharpDX.Direct3D9.PresentParameters(form.ClientSize.Width, form.ClientSize.Height, 
                     SharpDX.Direct3D9.Format.X8R8G8B8, 1, MultisampleType.None, 0, SharpDX.Direct3D9.SwapEffect.Copy, 
-                    form.Handle, true, true, SharpDX.Direct3D9.Format.D24X8, 
+                    form.Handle, true, false, SharpDX.Direct3D9.Format.D24X8, 
                     SharpDX.Direct3D9.PresentFlags.LockableBackBuffer, 0, PresentInterval.Immediate));
-            
-            var vertices = new VertexBuffer(device, Utilities.SizeOf<Vector3D>() * Total, SharpDX.Direct3D9.Usage.WriteOnly,
-                VertexFormat.None, Pool.Default);
 
-            var vertexElems = new[]
-            {
-                new VertexElement(0, 0, DeclarationType.Float3, DeclarationMethod.Default, DeclarationUsage.Position, 0),
-                new VertexElement(0, 12, DeclarationType.Ubyte4, DeclarationMethod.Default, DeclarationUsage.Color, 0),
-                VertexElement.VertexDeclarationEnd
-            };
-
-            var vertexDecl = new VertexDeclaration(device, vertexElems);
+            Init(device.NativePointer);
 
             //var view = Matrix.LookAtLH(
             //    new Vector3(0.0f, 3.0f, -2.0f), // the camera position
@@ -109,27 +86,25 @@ namespace GraphiK3D
             //device.SetRenderState(RenderState.Lighting, false);
 
             //var clock = System.Diagnostics.Stopwatch.StartNew();
-            Texture t = new Texture(device, form.Width, form.Height, 1, SharpDX.Direct3D9.Usage.None, SharpDX.Direct3D9.Format.A8R8G8B8, Pool.Default);
-            t = Texture.FromFile(device, "audyty-i-optymalizacja-kosztowa.jpg");
 
-            Sprite sprite = null;
-            sprite = new SharpDX.Direct3D9.Sprite(device);
+            var backBuffer = device.GetBackBuffer(0, 0);
 
-            var x = device.GetBackBuffer(0, 0);
-            var z = SharpDX.Direct3D9.Surface.CreateOffscreenPlain(device, form.Width, form.Height, x.Description.Format, Pool.SystemMemory);
+            
+            Resize(form.Width, form.Height, backBuffer.NativePointer);
 
-            //z.NativePointer
-            //device.GetRenderTargetData(x, z);
+            return;
 
             RenderLoop.Run(form, () =>
             {
-                var b = x.LockRectangle(LockFlags.None);
+                //var b = backBuffer.LockRectangle(LockFlags.None);
+
+
                 //z.LockRectangle(LockFlags.None);
 
                 //device.UpdateSurface(x, z);
 
                 //z.UnlockRectangle();
-                x.UnlockRectangle();
+                //backBuffer.UnlockRectangle();
 
                 //var time = (float)(clock.Elapsed.TotalMilliseconds) / 300.0f;
                 //updater.Update(vbres, time);
@@ -138,27 +113,20 @@ namespace GraphiK3D
                 /*device.Clear(ClearFlags.Target | ClearFlags.ZBuffer, new RawColorBGRA(0, 40, 100, 0), 1.0f, 0);
                 device.BeginScene();
 
-                //device.VertexDeclaration = vertexDecl;
-                //device.SetStreamSource(0, vertices, 0, Utilities.SizeOf<Vector4>());
-                // we use PointList as the graphics primitives
-                //device.DrawPrimitives(SharpDX.Direct3D9.PrimitiveType.PointList, 0, Total);
-
-                sprite.Begin(SharpDX.Direct3D9.SpriteFlags.None);
-                sprite.Draw(t, new RawColorBGRA(0xFF, 0xFF, 0xFF, 0x00));
-
-                sprite.End();
-
                 device.EndScene();*/
+
+                //var b = backBuffer.LockRectangle(LockFlags.None);
+
+                
+
+                Begin();
+                End();
+
+                //backBuffer.UnlockRectangle();
 
                 device.Present();
             });
-
-            //UnregisterVerticesResource(vbres);
-
-            //updater.Dispose();
-            //worker.Dispose();
-            //vertexDecl.Dispose();
-            //vertices.Dispose();
+            
             device.Dispose();
             form.Dispose();
         }

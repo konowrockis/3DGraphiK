@@ -13,7 +13,7 @@ namespace GraphiK3D.Rendering
 {
     unsafe class Renderer
     {
-        struct float3
+        public struct float3
         {
             public float x;
             public float y;

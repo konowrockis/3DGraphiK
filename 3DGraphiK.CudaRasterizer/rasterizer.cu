@@ -13,40 +13,65 @@
 #define RASTERIZER_BLOCK_SIZE 8
 #define FRAMEBUFFER_BLOCK_SIZE 256
 
-static VertexShaderIn* vertexBufferIn;
-static VertexShaderOut* vertexBufferOut;
-static Triangle* primitivesBuffer;
-static int* indexBuffer;
-static int numOfVertices;
-static int numOfFaces;
+#define getLastCudaError(msg)      __getLastCudaError (msg, __FILE__, __LINE__)
+inline void __getLastCudaError(const char *errorMessage, const char *file, const int line)
+{
+	cudaError_t err = cudaGetLastError();
+
+	if (cudaSuccess != err)
+	{
+		FILE* log = fopen("log.txt", "a+");
+
+		fprintf(log, "%s(%i) : getLastCudaError() CUDA error : %s : (%d) %s.\n",
+			file, line, errorMessage, (int)err, cudaGetErrorString(err));
+
+		fclose(log);
+	}
+}
+
 static float4* transformation;
 static float3 camera;
-static int* depth = NULL;
-static Fragment* fragmentBuffer = NULL;
 static int width;
 static int height;
-static int* frameBuffer = NULL;
 
-void Init(float3* vertices, float3* normals, float3* colors, int* indices, int numberOfVertices, int numberOfFaces)
+static int* depth = NULL;
+static Fragment* fragmentBuffer = NULL;
+
+static bool backCullingEnabled = true;
+static bool renderWireframe = false;
+
+void Init(IDirect3DDevice9Ex* device)
 {
-	cudaSetDevice(0);
+	//cudaD3D9SetDirect3DDevice(device);
+	//getLastCudaError("cudaD3D9SetDirect3DDevice failed");
 
-	numOfVertices = numberOfVertices;
-	numOfFaces = numberOfFaces;
-	
-	cudaMalloc((void**)&vertexBufferIn, numOfVertices * sizeof(VertexShaderIn));
-	cudaMalloc((void**)&vertexBufferOut, numOfVertices * sizeof(VertexShaderOut));
+	cudaSetDevice(0);
+	getLastCudaError("cudaSetDevice failed");
+
 	cudaMalloc((void**)&transformation, 16 * sizeof(float));
-	cudaMalloc((void**)&primitivesBuffer, numOfFaces * sizeof(Triangle));
-	cudaMalloc((void**)&indexBuffer, numOfFaces * 3 * sizeof(int));
+}
+
+Model* CreateModel(float3* vertices, float3* normals, float3* colors, int* indices, int numOfVertices, int numOfFaces)
+{
+	Model* model = new Model;
+
+	model->numOfVertices = numOfVertices;
+	model->numOfFaces = numOfFaces;
+
+	cudaMalloc((void**)&model->vertexBufferIn, numOfVertices * sizeof(VertexShaderIn));
+	cudaMalloc((void**)&model->vertexBufferOut, numOfVertices * sizeof(VertexShaderOut));
+	cudaMalloc((void**)&model->primitivesBuffer, numOfFaces * sizeof(Triangle));
+	cudaMalloc((void**)&model->indexBuffer, numOfFaces * 3 * sizeof(int));
 
 	for (int i = 0; i < numOfVertices; i++)
 	{
 		VertexShaderIn vertex = { vertices[i], normals[i], colors[i] };
-		cudaMemcpy(vertexBufferIn + i, &vertex, sizeof(VertexShaderIn), cudaMemcpyHostToDevice);
+		cudaMemcpy(model->vertexBufferIn + i, &vertex, sizeof(VertexShaderIn), cudaMemcpyHostToDevice);
 	}
 
-	cudaMemcpy(indexBuffer, indices, numOfFaces * 3 * sizeof(int), cudaMemcpyHostToDevice);
+	cudaMemcpy(model->indexBuffer, indices, numOfFaces * 3 * sizeof(int), cudaMemcpyHostToDevice);
+
+	return model;
 }
 
 void SetTransformation(float4* transf, float3 cam)
@@ -55,7 +80,12 @@ void SetTransformation(float4* transf, float3 cam)
 	camera = cam;
 }
 
-void Resize(int w, int h, int* frameBuf)
+static cudaGraphicsResource* backBufferResource;
+static void* backBufferLinear;
+static IDirect3DSurface9* backBufferSurface;
+static size_t backBufferPitch;
+
+void Resize(unsigned int w, unsigned int h, IDirect3DSurface9* backBufSurface)
 {
 	width = w;
 	height = h;
@@ -64,20 +94,30 @@ void Resize(int w, int h, int* frameBuf)
 	if (fragmentBuffer != NULL) cudaFree(fragmentBuffer);
 
 	cudaMalloc((void**)&depth, width * height * sizeof(int));
-	cudaMalloc((void**)&fragmentBuffer, width * height * sizeof(Fragment));
+	getLastCudaError("cudaMalloc depth failed");
 
-	frameBuffer = frameBuf;
+	cudaMalloc((void**)&fragmentBuffer, width * height * sizeof(Fragment));
+	getLastCudaError("cudaMalloc fragmentBuffer failed");
+
+	cudaGraphicsD3D9RegisterResource(&backBufferResource, backBufSurface, cudaGraphicsRegisterFlagsNone);
+	getLastCudaError("cudaGraphicsD3D9RegisterResource failed");
+
+	cudaMallocPitch(&backBufferLinear, &backBufferPitch, w * sizeof(int), h * sizeof(int));
+	getLastCudaError("cudaMallocPitch failed");
+
+	cudaMemset(backBufferLinear, 0xFF, backBufferPitch * h);
 }
 
-void Free()
+void FreeRasterizer()
 {
 	cudaFree(depth);
 	cudaFree(fragmentBuffer);
-	cudaFree(primitivesBuffer);
-	cudaFree(primitivesBuffer);
 	cudaFree(transformation);
-	cudaFree(vertexBufferOut);
-	cudaFree(vertexBufferIn);
+}
+
+void FreeModel(Model* model)
+{
+
 }
 
 __forceinline__ __device__ float3 transform(float4* transformation, float3 v)
@@ -214,86 +254,6 @@ __global__ void Assembler(VertexShaderOut* vertexOut, Triangle* primitivesBuffer
 	atomicMax(&triangle->maxY, triangle->v3.Pos.y);
 }
 
-//__global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragment* fragmentBuffer, int width, int height, int primitivesCount)
-//{
-//	int index = blockIdx.z * blockDim.z + threadIdx.z;
-//	if (index >= primitivesCount) return;
-//
-//	Triangle* triangle = &primitivesBuffer[index];
-//	if (!triangle->Visible) return;
-//
-//	int x = blockIdx.x * blockDim.x + threadIdx.x;
-//	int y = blockIdx.y * blockDim.y + threadIdx.y;
-//
-//	if (x >= width || y >= height) return;
-//
-//	float3 coords = calculateBarycentricCoordinate(make_float3(x, y, 0), triangle->v1->Pos, triangle->v2->Pos, triangle->v3->Pos);
-//
-//	if (!isBarycentricCoordInBounds(coords)) return;
-//
-//	int z = getZAtCoordinate(coords, triangle->v1->Pos, triangle->v2->Pos, triangle->v3->Pos) * 10000;
-//	int i = y * width + x;
-//
-//	atomicMin(&depth[i], z);
-//
-//	if (depth[i] == z)
-//	{
-//		fragmentBuffer[i].Color = triangle->v1->Color * coords.x + triangle->v2->Color * coords.y + triangle->v3->Color * coords.z;
-//		fragmentBuffer[i].Position = triangle->v1->Pos * coords.x + triangle->v2->Pos * coords.y + triangle->v3->Pos * coords.z;
-//		fragmentBuffer[i].Normal = triangle->v1->Normal * coords.x + triangle->v2->Normal * coords.y + triangle->v3->Normal * coords.z;
-//	}
-//}
-//
-//__device__ void getStart(VertexShaderOut* v1, VertexShaderOut* v2, VertexShaderOut* v3, float& m1, float& m2, float& top, float& bottom, float& x1, float& x2)
-//{
-//	m1 = (v1->Pos.x - v3->Pos.x) / (v1->Pos.y - v3->Pos.y);
-//
-//	if (threadIdx.z == 0) //upper half
-//	{
-//		/*if (round(v1->Pos.y) == round(v2->Pos.y))
-//		{
-//			top = bottom = 0;
-//			return;
-//		}*/
-//
-//		top = v1->Pos.y;
-//		bottom = v2->Pos.y;
-//		x1 = x2 = v1->Pos.x;
-//
-//		m2 = (v1->Pos.x - v2->Pos.x) / (v1->Pos.y - v2->Pos.y);
-//
-//		if (m1 > m2)
-//		{
-//			float tmp = m1;
-//			m1 = m2;
-//			m2 = tmp;
-//		}
-//	}
-//	else // bottom half
-//	{
-//		top = v2->Pos.y;
-//		bottom = v3->Pos.y;
-//		x1 = v2->Pos.x;
-//		x2 = v1->Pos.x + m1 * (v2->Pos.y - v1->Pos.y);
-//
-//		m2 = (v2->Pos.x - v3->Pos.x) / (v2->Pos.y - v3->Pos.y);
-//
-//		if (m1 < m2)
-//		{
-//			float tmp = m1;
-//			m1 = m2;
-//			m2 = tmp;
-//		}
-//	}
-//
-//	if (x1 > x2)
-//	{
-//		float tmp = x1;
-//		x1 = x2;
-//		x2 = tmp;
-//	}
-//}
-
 __device__ void line(float3 start, float3 end, Fragment* depthBuffer, int width, int height)
 {
 	float3 color = make_float3(1, 1, 1);
@@ -355,108 +315,6 @@ __global__ void RasterizeWireframe(Triangle* primitivesBuffer, int* depth, Fragm
 
 	line(start, end, fragmentBuffer, width, height);
 }
-//
-//__global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragment* fragmentBuffer, int width, int height, int primitivesCount)
-//{
-//	Triangle* triangle = &primitivesBuffer[blockIdx.x];
-//	if (!triangle->Visible) return;
-//
-//	//if (x >= width || y >= height) return;
-//	float top = 0;
-//	float bottom = 0;
-//	float x1 = 0;
-//	float x2 = 0;
-//	float m1 = 0;
-//	float m2 = 0;
-//
-//	if (triangle->v1->Pos.y < triangle->v2->Pos.y)
-//	{
-//		if (triangle->v2->Pos.y < triangle->v3->Pos.y) // v1 > v2 > v3
-//		{
-//			getStart(triangle->v1, triangle->v2, triangle->v3, m1, m2, top, bottom, x1, x2);
-//		}
-//		else if (triangle->v3->Pos.y < triangle->v1->Pos.y) // v3 > v1 > v2
-//		{
-//			getStart(triangle->v3, triangle->v1, triangle->v2, m1, m2, top, bottom, x1, x2);
-//		}
-//		else // v1 > v3 > v2
-//		{
-//			getStart(triangle->v1, triangle->v3, triangle->v2, m1, m2, top, bottom, x1, x2);
-//		}
-//	}
-//	else
-//	{
-//		if (triangle->v1->Pos.y < triangle->v3->Pos.y) // v2 > v1 > v3
-//		{
-//			getStart(triangle->v2, triangle->v1, triangle->v3, m1, m2, top, bottom, x1, x2);
-//		}
-//		else if (triangle->v3->Pos.y < triangle->v2->Pos.y) // v3 > v2 > v1
-//		{
-//			getStart(triangle->v3, triangle->v2, triangle->v1, m1, m2, top, bottom, x1, x2);
-//		}
-//		else // v2 > v3 > v1
-//		{
-//			getStart(triangle->v2, triangle->v3, triangle->v1, m1, m2, top, bottom, x1, x2);
-//		}
-//	}
-//
-//	if (top == bottom) return;
-//
-//	float h = bottom - top;
-//	top = top + h * threadIdx.x / RASTERIZER_BLOCK_SIZE;
-//	x1 = x1 + m1 * h * threadIdx.x / RASTERIZER_BLOCK_SIZE;
-//	x2 = x2 + m2 * h * threadIdx.x / RASTERIZER_BLOCK_SIZE;
-//	bottom = top + h / RASTERIZER_BLOCK_SIZE;
-//
-//	if (top < 0 || bottom >= height) return;
-//
-//	for (int y = top; y < bottom - 1; y++)
-//	{
-//		if (y < 0)
-//		{
-//			continue;
-//		}
-//		if (y > height)
-//		{
-//			break;
-//		}
-//
-//		for (int x = x1; x < x2; x++)
-//		{
-//			if (x < 0)
-//			{
-//				continue;
-//			}
-//			if (x > width)
-//			{
-//				break;
-//			}
-//			
-//			float3 coords = calculateBarycentricCoordinate(make_float3(x, y, 0), triangle->v1->Pos, triangle->v2->Pos, triangle->v3->Pos);
-//			/*
-//			if (!isBarycentricCoordInBounds(coords))
-//			{
-//				continue;
-//			}*/
-//
-//			int z = getZAtCoordinate(coords, triangle->v1->Pos, triangle->v2->Pos, triangle->v3->Pos) * 10000;
-//			int i = y * width + x;
-//
-//			atomicMin(&depth[i], z);
-//
-//			if (depth[i] == z)
-//			{
-//				fragmentBuffer[i].Color = triangle->v1->Color * coords.x + triangle->v2->Color * coords.y + triangle->v3->Color * coords.z;
-//				fragmentBuffer[i].Position = triangle->v1->Pos * coords.x + triangle->v2->Pos * coords.y + triangle->v3->Pos * coords.z;
-//				fragmentBuffer[i].Normal = triangle->v1->Normal * coords.x + triangle->v2->Normal * coords.y + triangle->v3->Normal * coords.z;
-//			}
-//		}
-//
-//		x1 += m1;
-//		x2 += m2;
-//	}
-//}
-
 
 __global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragment* fragmentBuffer, int width, int height, int primitivesCount)
 {
@@ -511,16 +369,18 @@ __device__ __forceinline__ int Clamp(float v)
 	return v * 255;
 }
 
-__global__ void CopyToFrameBuffer(Fragment* fragmentBuffer, int* frameBuffer, int size)
+__global__ void CopyToFrameBuffer(Fragment* fragmentBuffer, int* backBuffer, int width, int height, int pitch)
 {
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-	if (i >= size) return;
+	int* pixel;
 
-	float3 c = fragmentBuffer[i].Color;
+	if (x >= width || y >= height) return;
 
 	//frameBuffer[i] = (Clamp(c.x) << 16) | (Clamp(c.y) << 8) | Clamp(c.z);
-	frameBuffer[i] = 0xFF00FF00;
+	pixel = backBuffer + y * pitch + x;
+	pixel[0] = 0xFF00FFFF;
 }
 
 __host__ void ClearBuffers()
@@ -528,21 +388,43 @@ __host__ void ClearBuffers()
 	cudaMemset(depth, 5000000, width * height * sizeof(int));
 	cudaMemset(fragmentBuffer, 0, width * height * sizeof(Fragment));
 }
-
-void Rasterize()
+cudaStream_t stream = 0;
+cudaGraphicsResource *ppResources[1] =
 {
-	int vertexShaderGridSize = (numOfVertices - 1) / VERTEX_SHADER_BLOCK_SIZE + 1;
-	int assemblerGridSize = (numOfFaces - 1) / VERTEX_SHADER_BLOCK_SIZE + 1;
-	/*
+	backBufferResource
+};
+
+void Begin()
+{
 	ClearBuffers();
+
+	cudaGraphicsMapResources(1, ppResources, stream);
+}
+
+void End()
+{
+	cudaArray *cuArray;
+
+	cudaGraphicsSubResourceGetMappedArray(&cuArray, backBufferResource, 0, 0);
+	getLastCudaError("cudaGraphicsSubResourceGetMappedArray failed");
+
+	//CopyToFrameBuffer << <dim3((width + 16 - 1) / 16, (height + 16 - 1) / 16), dim3(16, 16) >> > (fragmentBuffer, (int*)backBufferLinear, width, height, backBufferPitch);
+
+	cudaMemcpy2DToArray(cuArray, 0, 0, backBufferLinear, backBufferPitch, 5 * sizeof(int), 5, cudaMemcpyDeviceToDevice);
+	getLastCudaError("cudaMemcpy2DToArray failed");
+
+	cudaGraphicsUnmapResources(1, ppResources, stream);
+	//cudaMemcpy(hostFrameBuffer, frameBuffer, width * height * sizeof(int), cudaMemcpyDeviceToHost);
+}
+
+void DrawModel(Model* model)
+{
+	/*int vertexShaderGridSize = (numOfVertices - 1) / VERTEX_SHADER_BLOCK_SIZE + 1;
+	int assemblerGridSize = (numOfFaces - 1) / VERTEX_SHADER_BLOCK_SIZE + 1;
 
 	VertexShader << <vertexShaderGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (vertexBufferIn, vertexBufferOut, transformation, numOfVertices);
 	Assembler << <assemblerGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (vertexBufferOut, primitivesBuffer, indexBuffer, numOfFaces, camera, true);
 	RasterizeTriangle << <numOfFaces, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (primitivesBuffer, depth, fragmentBuffer, width, height, numOfFaces);*/
 
 	//RasterizeWireframe<< <numOfFaces, 3 >> > (primitivesBuffer, depth, fragmentBuffer, width, height, numOfFaces);
-
-	CopyToFrameBuffer << <(width * height - 1) / FRAMEBUFFER_BLOCK_SIZE + 1, FRAMEBUFFER_BLOCK_SIZE >> > (fragmentBuffer, frameBuffer, width * height);
-
-	//cudaMemcpy(hostFrameBuffer, frameBuffer, width * height * sizeof(int), cudaMemcpyDeviceToHost);
 }
