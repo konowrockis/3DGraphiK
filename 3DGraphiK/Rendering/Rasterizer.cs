@@ -146,9 +146,7 @@ namespace GraphiK3D.Rendering
 
         double getZAtCoordinate(Vector3D barycentricCoord, Point3D p1, Point3D p2, Point3D p3)
         {
-            return -(barycentricCoord.X * p1.Z
-                + barycentricCoord.Y * p2.Z
-                + barycentricCoord.Z * p3.Z);
+            return -(barycentricCoord.X * p1.Z + barycentricCoord.Y * p2.Z + barycentricCoord.Z * p3.Z);
         }
 
         public Point3D light;
@@ -187,8 +185,8 @@ namespace GraphiK3D.Rendering
 
                         var color = pos.X * c1 + pos.Y * c2 + pos.Z * c3;
                         var normal = pos.X * n1 + pos.Y * n2 + pos.Z * n3;
-
-                        /*normal = (normal + new Vector3D(1, 1, 1)) / 2;
+                        /*
+                        normal = (normal + new Vector3D(1, 1, 1)) / 2;
 
                         double ks = 0.3, kd = 0.7, ka = 0;
 
@@ -220,12 +218,12 @@ namespace GraphiK3D.Rendering
             {
                 return;
             }
-
+            /*
             DrawLine(NormalizePos(p1.X, width), NormalizePos(p1.Y, height), NormalizePos(p2.X, width), NormalizePos(p2.Y, height), 0xFFFFFF);
             DrawLine(NormalizePos(p2.X, width), NormalizePos(p2.Y, height), NormalizePos(p3.X, width), NormalizePos(p3.Y, height), 0xFFFFFF);
             DrawLine(NormalizePos(p3.X, width), NormalizePos(p3.Y, height), NormalizePos(p1.X, width), NormalizePos(p1.Y, height), 0xFFFFFF);
 
-            return;
+            return;*/
 
             p1 = new Point3D(NormalizePos(p1.X, width), NormalizePos(p1.Y, height), p1.Z);
             p2 = new Point3D(NormalizePos(p2.X, width), NormalizePos(p2.Y, height), p2.Z);

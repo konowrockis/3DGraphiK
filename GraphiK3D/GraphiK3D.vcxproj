@@ -152,10 +152,12 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="rasterizer.cu" />
+    <CudaCompile Include="stream_compaction.cu" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ModelLoader.h" />
     <ClInclude Include="rasterizer.h" />
+    <ClInclude Include="stream_compaction.h" />
     <ClInclude Include="structs.h" />
     <ClInclude Include="VectorUtils.h" />
   </ItemGroup>

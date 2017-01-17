@@ -17,6 +17,8 @@
 #include "GLM/vec4.hpp"
 #include "GLM/mat4x4.hpp"
 
+#include "stream_compaction.h"
+
 #define VERTEX_SHADER_BLOCK_SIZE 256
 #define RASTERIZER_BLOCK_SIZE 16
 #define FRAMEBUFFER_BLOCK_SIZE 256
@@ -50,6 +52,7 @@ static bool renderWireframe = false;
 
 static cudaArray_t framebuf_device;
 static int* framebuf;
+static Triangle* compactionOutput;
 
 void Init()
 {
@@ -70,6 +73,7 @@ RasterizerModel* CreateModel(Model* model)
 	cudaMalloc((void**)&rasterizerModel->vertexBufferOut, model->numOfVertices * sizeof(VertexShaderOut));
 	cudaMalloc((void**)&rasterizerModel->primitivesBuffer, model->numOfFaces * sizeof(Triangle));
 	cudaMalloc((void**)&rasterizerModel->indexBuffer, model->numOfFaces * 3 * sizeof(int));
+	cudaMalloc((void**)&compactionOutput, model->numOfFaces * sizeof(Triangle));
 
 	for (int i = 0; i < model->numOfVertices; i++)
 	{
@@ -215,9 +219,8 @@ __global__ void Assembler(VertexShaderOut* vertexOut, Triangle* primitivesBuffer
 
 	triangle->x = glm::min(glm::min(triangle->v1.Pos.x, triangle->v2.Pos.x), triangle->v3.Pos.x);
 	triangle->y = glm::min(glm::min(triangle->v1.Pos.y, triangle->v2.Pos.y), triangle->v3.Pos.y);
-
-	triangle->w = (glm::max(glm::max(triangle->v1.Pos.x, triangle->v2.Pos.x), triangle->v3.Pos.x) - triangle->x) / RASTERIZER_BLOCK_SIZE + 1;
-	triangle->h = (glm::max(glm::max(triangle->v1.Pos.y, triangle->v2.Pos.y), triangle->v3.Pos.y) - triangle->y) / RASTERIZER_BLOCK_SIZE + 1;
+	triangle->w = glm::max(glm::max(triangle->v1.Pos.x, triangle->v2.Pos.x), triangle->v3.Pos.x) - triangle->x;
+	triangle->h = glm::max(glm::max(triangle->v1.Pos.y, triangle->v2.Pos.y), triangle->v3.Pos.y) - triangle->y;
 }
 
 __device__ void line(float3 start, float3 end, Fragment* depthBuffer, int width, int height)
@@ -284,16 +287,12 @@ __global__ void RasterizeWireframe(Triangle* primitivesBuffer, int* depth, Fragm
 
 __global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragment* fragmentBuffer, int width, int height, int primitivesCount)
 {
-	int index = blockIdx.x;
-	if (index >= primitivesCount) return;
+	Triangle* triangle = primitivesBuffer + blockIdx.x;
 
-	Triangle* triangle = primitivesBuffer + index;
-	if (!triangle->Visible) return;
-
-	int minX = triangle->x + triangle->w * threadIdx.x;
-	int minY = triangle->y + triangle->h * threadIdx.y;
-	int maxY = glm::min(minY + triangle->h, height);
-	int maxX = glm::min(minX + triangle->w, width);
+	int minX = triangle->x + (triangle->w / blockDim.x + 1) * threadIdx.x;
+	int minY = triangle->y + (triangle->h / blockDim.y + 1) * threadIdx.y;
+	int maxY = glm::min(minY + triangle->h / (int)blockDim.y + 1, height);
+	int maxX = glm::min(minX + triangle->w / (int)blockDim.y + 1, width);
 
 	for (int y = glm::max(minY, 0); y < maxY; y++)
 	{
@@ -301,9 +300,9 @@ __global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragme
 		{
 			float3 coords = calculateBarycentricCoordinate(make_float3(x, y, 0), triangle->v1.Pos, triangle->v2.Pos, triangle->v3.Pos);
 
-			//if (isBarycentricCoordInBounds(coords)) 
+			if (isBarycentricCoordInBounds(coords)) 
 			{
-				/*int z = getZAtCoordinate(coords, triangle->v1.Pos, triangle->v2.Pos, triangle->v3.Pos) * 10000;
+				int z = getZAtCoordinate(coords, triangle->v1.Pos, triangle->v2.Pos, triangle->v3.Pos) * 10000;
 				int i = y * width + x;
 				
 				atomicMin(&depth[i], z);
@@ -313,11 +312,53 @@ __global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragme
 					fragmentBuffer[i].Color = triangle->v1.Color * coords.x + triangle->v2.Color * coords.y + triangle->v3.Color * coords.z;
 					fragmentBuffer[i].Position = triangle->v1.Pos * coords.x + triangle->v2.Pos * coords.y + triangle->v3.Pos * coords.z;
 					fragmentBuffer[i].Normal = triangle->v1.Normal * coords.x + triangle->v2.Normal * coords.y + triangle->v3.Normal * coords.z;
-				}*/
+				}
 			}
 		}
 	}
 }
+
+//__global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragment* fragmentBuffer, int width, int height, int primitivesCount)
+//{
+//	Triangle* triangle = primitivesBuffer + blockIdx.z;
+//
+//	int minX = triangle->x + (triangle->w / blockDim.x + 1) * threadIdx.x;
+//	int minY = triangle->y + (triangle->h / blockDim.y + 1) * threadIdx.y;
+//	int maxY = glm::min(minY + triangle->h / (int)blockDim.y + 1, height);
+//	int maxX = glm::min(minX + triangle->w / (int)blockDim.y + 1, width);
+//
+//	int y0 = GRID_SIZE * (blockIdx.y * blockDim.y + threadIdx.y);
+//	int x0 = GRID_SIZE * (blockIdx.x * blockDim.x + threadIdx.x);
+//
+//	if (triangle->w < x0 || triangle->x > x0 + GRID_SIZE || triangle->h < y0 || triangle->y > y0 + GRID_SIZE) return;
+//
+//	for (int y1 = 0; y1 < GRID_SIZE; y1++)
+//	{
+//		for (int x1 = 0; x1 < GRID_SIZE; x1++)
+//		{
+//			int y = y0 + y1;
+//			int x = x0 + x1;
+//
+//			float3 coords = calculateBarycentricCoordinate(make_float3(x, y, 0), triangle->v1.Pos, triangle->v2.Pos, triangle->v3.Pos);
+//
+//			if (isBarycentricCoordInBounds(coords))
+//			{
+//				int z = getZAtCoordinate(coords, triangle->v1.Pos, triangle->v2.Pos, triangle->v3.Pos) * 10000;
+//				int i = y * width + x;
+//
+//				atomicMin(&depth[i], z);
+//
+//				if (depth[i] == z)
+//				{
+//					fragmentBuffer[i].Color = triangle->v1.Color * coords.x + triangle->v2.Color * coords.y + triangle->v3.Color * coords.z;
+//					fragmentBuffer[i].Position = triangle->v1.Pos * coords.x + triangle->v2.Pos * coords.y + triangle->v3.Pos * coords.z;
+//					fragmentBuffer[i].Normal = triangle->v1.Normal * coords.x + triangle->v2.Normal * coords.y + triangle->v3.Normal * coords.z;
+//				}
+//			}
+//		}
+//	}
+//}
+
 
 __device__ __forceinline__ int Clamp(float v)
 {
@@ -363,10 +404,17 @@ void DrawModel(RasterizerModel* model)
 {
 	int vertexShaderGridSize = (model->numOfVertices - 1) / VERTEX_SHADER_BLOCK_SIZE + 1;
 	int assemblerGridSize = (model->numOfFaces - 1) / VERTEX_SHADER_BLOCK_SIZE + 1;
+	int primitiveCount = model->numOfFaces;
 
 	VertexShader << <vertexShaderGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (model->vertexBufferIn, model->vertexBufferOut, transformation, model->numOfVertices);
 	Assembler << <assemblerGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (model->vertexBufferOut, model->primitivesBuffer, model->indexBuffer, model->numOfFaces, camera, true);
-	RasterizeTriangle << <model->numOfFaces, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (model->primitivesBuffer, depth, fragmentBuffer, width, height, model->numOfFaces);
+
+	//primitiveCount = Compact(model->numOfFaces, compactionOutput, model->primitivesBuffer);
+	//cudaMemcpy(triangle->primitivesBuffer, compactionOutput, primitiveCount * sizeof(Triangle), cudaMemcpyDeviceToDevice);
+
+	RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (model->primitivesBuffer, depth, fragmentBuffer, width, height, model->numOfFaces);
+	
+	//RasterizeTriangle << <dim3(width / (RASTERIZER_BLOCK_SIZE * GRID_SIZE), height / (RASTERIZER_BLOCK_SIZE * GRID_SIZE), primitiveCount), dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (compactionOutput, depth, fragmentBuffer, width, height, model->numOfFaces);
 
 	//RasterizeWireframe<< <numOfFaces, 3 >> > (primitivesBuffer, depth, fragmentBuffer, width, height, numOfFaces);
 }

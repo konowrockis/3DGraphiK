@@ -65,7 +65,7 @@ namespace GraphiK3D.Rendering
 
         public void Init()
         {
-            model = ModelLoader.Load(@"Assets\test.off");
+            model = ModelLoader.Load(@"Assets\mushroom.off");
             projectionMatrix = GetProjectionMatrix();
 
             vertexBufferIn = new VertexShaderIn[model.Vertices.Length];
@@ -94,20 +94,19 @@ namespace GraphiK3D.Rendering
             rasterizer.Clear(0x000000);
 
             Matrix3D transformation = Matrix3D.Identity;
+
             transformation.Rotate(new Quaternion(rotation.Axis, -rotation.Angle));
             Point3D camera = transformation.Transform(Camera);
             rasterizer.light = transformation.Transform(new Point3D(10, 10, -3));
 
             transformation = Matrix3D.Identity;
-            //transformation.Rotate(rotation);
+            transformation.Rotate(rotation);
             transformation.Translate(-(Vector3D)Camera);
             transformation.Append(projectionMatrix);
-            transformation.Translate(new Vector3D(1, 1, 0));
-            transformation.Scale(new Vector3D(640 / 2, 480 / 2, 0));
 
             VertexShader.Apply(vertexBufferIn, vertexBufferOut, transformation);
             PrimitivesAssembler.Assemble(vertexBufferOut, model.Indices, primitivesBuffer, model.Normals);
-            BackFaceCulling.Cull(primitivesBuffer, camera);
+            //BackFaceCulling.Cull(primitivesBuffer, camera);
 
             for (int i = 0; i < model.NumberOfTriangles; i++)
             {

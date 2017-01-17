@@ -5,7 +5,8 @@
 #include "GLM/vec3.hpp"
 #include "GLM/vec4.hpp"
 #include "GLM/mat4x4.hpp"
-#include "GLM/gtc/matrix_transform.hpp"
+#include "GLM/gtc/matrix_transform.hpp"
+
 #include <stdlib.h>
 #include <stdio.h>
 #include "rasterizer.h"
@@ -108,7 +109,7 @@ int main()
 	
 	RasterizerModel* m = CreateModel(ModelLoader::LoadModel("Assets\\teapot.off"));
 
-	glm::vec3 translation(0, -1, 4);
+	glm::vec3 translation(0, -1, 12);
 	glm::vec3 sc(width / 2, height / 2, 1);
 	glm::vec3 mv(1, 1, 0);
 
