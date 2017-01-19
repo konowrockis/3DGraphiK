@@ -16,8 +16,8 @@
 
 #include "ModelLoader.h"
 
-int width = 640;
-int height = 480;
+int width = 1920;
+int height = 1080;
 bool isLeftMousePressed = false;
 bool isRightMousePressed = false;
 bool isMiddleMousePressed = false;
@@ -53,12 +53,6 @@ static void mouseMoveCallback(GLFWwindow *window, double x, double y)
 		if (newVal > 1 && newVal < 30)
 		{
 			translation.z = newVal;
-
-			/*glm::mat4 ViewTranslate = glm::translate(glm::mat4(1.f), translation);
-			glm::mat4 rot = glm::toMat4(rotation);
-			glm::mat4 res = ViewScale * ViewMv * Proj * ViewTranslate * rot;
-
-			SetTransformation(res, glm::vec4(-translation, 1) * rot);*/
 		}
 	}
 	else if (isMiddleMousePressed) 
@@ -96,7 +90,7 @@ glm::mat4 getViewMatrix()
 {
 	glm::mat4 viewScale = glm::scale(glm::mat4(1.f), glm::vec3(width / 2, height / 2, 1));
 	glm::mat4 viewMove = glm::translate(viewScale, glm::vec3(1, 1, 0));
-	glm::mat4 projectionMatrix = glm::perspective(glm::radians(60.f), (float)width / (float)height, 0.1f, 100.f);
+	glm::mat4 projectionMatrix = glm::perspective(glm::radians(60.f), (float)width / (float)height, 1.f, 100.f);
 
 	return viewMove * projectionMatrix;
 }
@@ -131,7 +125,7 @@ int main()
 	if (!glfwInit())
 		exit(EXIT_FAILURE);
 
-	GLFWwindow* window = glfwCreateWindow(width, height, "3DGraphiK", NULL, NULL);
+	GLFWwindow* window = glfwCreateWindow(width, height, "3DGraphiK", glfwGetPrimaryMonitor(), NULL);
 
 	if (!window)
 	{
@@ -143,7 +137,7 @@ int main()
 	glfwSetKeyCallback(window, key_callback);
 	glfwSetCursorPosCallback(window, mouseMoveCallback);
 	glfwSetMouseButtonCallback(window, mousePressCallback);
-	//glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
 	glewExperimental = GL_TRUE;
 	if (glewInit() != GLEW_OK) {

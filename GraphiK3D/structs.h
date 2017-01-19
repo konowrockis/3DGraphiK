@@ -24,7 +24,7 @@ struct Triangle
 
 	bool Visible;
 
-	int x, y, w, h;
+	float minx, miny, maxx, maxy;
 };
 
 struct Fragment
