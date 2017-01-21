@@ -23,7 +23,7 @@
 #define RASTERIZER_BLOCK_SIZE 9
 #define FRAMEBUFFER_BLOCK_SIZE 256
 
-#define getLastCudaError(msg)      __getLastCudaError (msg, __FILE__, __LINE__)
+#define getLastCudaError(msg) __getLastCudaError (msg, __FILE__, __LINE__)
 inline void __getLastCudaError(const char *errorMessage, const char *file, const int line)
 {
 	cudaError_t err = cudaGetLastError();
@@ -93,6 +93,11 @@ void SetTransformation(glm::mat4x4 transf, glm::vec3 cam)
 	camera = make_float3(cam.x, cam.y, cam.z);
 }
 
+void SetProjectionMatrix(glm::mat4x4 transf)
+{
+	cudaMemcpy(transformation, &transf, sizeof(glm::mat4x4), cudaMemcpyHostToDevice);
+}
+
 void Resize(unsigned int w, unsigned int h, GLuint texture)
 {
 	width = w;
@@ -109,6 +114,8 @@ void Resize(unsigned int w, unsigned int h, GLuint texture)
 
 	cudaMalloc((void**)&framebuf, width * height * sizeof(int));
 	getLastCudaError("cudaMalloc framebuf failed");
+
+
 
 	cudaGraphicsResource* resource;
 
@@ -181,10 +188,10 @@ __global__ void Assembler(VertexShaderOut* vertexOut, Triangle* primitivesBuffer
 			norm(cross(v1, v2))
 		) > 0;
 	
-	triangle->minx = glm::max(glm::min(glm::min(triangle->v1.Pos.x, triangle->v2.Pos.x), triangle->v3.Pos.x), 0.f);
-	triangle->miny = glm::max(glm::min(glm::min(triangle->v1.Pos.y, triangle->v2.Pos.y), triangle->v3.Pos.y), 0.f);
-	triangle->maxx = glm::min(glm::max(glm::max(triangle->v1.Pos.x, triangle->v2.Pos.x), triangle->v3.Pos.x), (float)width);
-	triangle->maxy = glm::min(glm::max(glm::max(triangle->v1.Pos.y, triangle->v2.Pos.y), triangle->v3.Pos.y), (float)height);
+	triangle->minx = glm::floor(glm::max(glm::min(glm::min(triangle->v1.Pos.x, triangle->v2.Pos.x), triangle->v3.Pos.x), 0.f));
+	triangle->miny = glm::floor(glm::max(glm::min(glm::min(triangle->v1.Pos.y, triangle->v2.Pos.y), triangle->v3.Pos.y), 0.f));
+	triangle->maxx = glm::ceil(glm::min(glm::max(glm::max(triangle->v1.Pos.x, triangle->v2.Pos.x), triangle->v3.Pos.x), (float)width));
+	triangle->maxy = glm::ceil(glm::min(glm::max(glm::max(triangle->v1.Pos.y, triangle->v2.Pos.y), triangle->v3.Pos.y), (float)height));
 
 	if (triangle->minx >= triangle->maxx || triangle->miny >= triangle->maxy)
 	{
@@ -258,12 +265,9 @@ __global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragme
 {
 	Triangle* triangle;
 
-	//if (threadIdx.x == 0)
-	{
-		triangle = primitivesBuffer + blockIdx.x;
-	}
+	triangle = primitivesBuffer + blockIdx.x;
 
-	__shared__ float4 vals[9];
+	__shared__ float4 vals[12];
 	float3 tmp = ((float3*)triangle)[threadIdx.x * 4 % 11];
 	vals[threadIdx.x] = make_float4(tmp.x, tmp.y, tmp.z, 0);
 
@@ -276,7 +280,10 @@ __global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragme
 	if (threadIdx.x == 0)
 	{
 		w[0] = triangle->minx;
-		//vals[8] = make_float4(triangle->v3.Color.x, triangle->v3.Color.y, triangle->v3.Color.z, 0);
+
+		vals[9] = make_float4(triangle->v1.ModelPos.x, triangle->v1.ModelPos.y, triangle->v1.ModelPos.z, 0);
+		vals[10] = make_float4(triangle->v2.ModelPos.x, triangle->v2.ModelPos.y, triangle->v2.ModelPos.z, 0);
+		vals[11] = make_float4(triangle->v3.ModelPos.x, triangle->v3.ModelPos.y, triangle->v3.ModelPos.z, 0);
 	}
 	if (threadIdx.y == 0)
 	{
@@ -306,9 +313,13 @@ __global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragme
 				{
 					Fragment* fragment = fragmentBuffer + i;
 
-					fragment->Position.x = vals[0].x * alpha + vals[1].x * beta + vals[2].x * gamma;
+					/*fragment->Position.x = vals[0].x * alpha + vals[1].x * beta + vals[2].x * gamma;
 					fragment->Position.y = vals[0].y * alpha + vals[1].y * beta + vals[2].y * gamma;
-					fragment->Position.z = vals[0].z * alpha + vals[1].z * beta + vals[2].z * gamma;
+					fragment->Position.z = vals[0].z * alpha + vals[1].z * beta + vals[2].z * gamma;*/
+
+					fragment->Position.x = vals[9].x * alpha + vals[10].x * beta + vals[11].x * gamma;
+					fragment->Position.y = vals[9].y * alpha + vals[10].y * beta + vals[11].y * gamma;
+					fragment->Position.z = vals[9].z * alpha + vals[10].z * beta + vals[11].z * gamma;
 
 					fragment->Normal.x = vals[3].x * alpha + vals[4].x * beta + vals[5].x * gamma;
 					fragment->Normal.y = vals[3].y * alpha + vals[4].y * beta + vals[5].y * gamma;
@@ -330,7 +341,7 @@ __device__ __forceinline__ int Clamp(float v)
 	return v * 255;
 }
 
-__global__ void CopyToFrameBuffer(Fragment* fragmentBuffer, int* backBuffer, int width, int height)
+__global__ void CopyToFrameBuffer(Fragment* fragmentBuffer, float3 lightPos, float3 cameraPos, int* backBuffer, int width, int height)
 {
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -341,8 +352,55 @@ __global__ void CopyToFrameBuffer(Fragment* fragmentBuffer, int* backBuffer, int
 	int* pixel = backBuffer + y * width + x;
 	Fragment* fragment = fragmentBuffer + y * width + x;
 
-	pixel[0] = (Clamp(fragment->Color.x) << 16) | (Clamp(fragment->Color.y) << 8) | Clamp(fragment->Color.z);
+	//
 	//pixel[0] = (Clamp((fragment->Normal.x + 1) / 2) << 16) | (Clamp((fragment->Normal.y + 1) / 2) << 8) | Clamp((fragment->Normal.z + 1) / 2);
+	//return;
+
+	if (fragment->Position.x == 0 && fragment->Position.y == 0 && fragment->Position.z == 0)
+	{
+		pixel[0] = (Clamp(fragment->Color.x) << 16) | (Clamp(fragment->Color.y) << 8) | Clamp(fragment->Color.z);
+		return;
+	}
+
+	const float ks = 0.5, kd = 0.5, ka = 0;
+
+	lightPos.x = lightPos.x - fragment->Position.x;
+	lightPos.y = lightPos.y - fragment->Position.y;
+	lightPos.z = lightPos.z - fragment->Position.z;
+
+	float len = length(lightPos);
+	lightPos.x /= len;
+	lightPos.y /= len;
+	lightPos.z /= len;
+
+	float wsp = dot(fragment->Normal, lightPos);
+
+	float3 r;
+	r.x = 2 * wsp * fragment->Normal.x - lightPos.x;
+	r.y = 2 * wsp * fragment->Normal.y - lightPos.y;
+	r.z = 2 * wsp * fragment->Normal.z - lightPos.z;
+
+	len = length(r);
+	r.x /= len;
+	r.y /= len;
+	r.z /= len;
+
+	cameraPos.x = cameraPos.x - fragment->Position.x;
+	cameraPos.y = cameraPos.y - fragment->Position.y;
+	cameraPos.z = cameraPos.z - fragment->Position.z;
+
+	len = length(cameraPos);
+	cameraPos.x /= len;
+	cameraPos.y /= len;
+	cameraPos.z /= len;
+
+	wsp *= kd;
+	wsp += ks * glm::pow(dot(r, cameraPos), 100);
+
+	pixel[0] = 
+		(Clamp(fragment->Color.x * wsp) << 16) | 
+		(Clamp(fragment->Color.y * wsp) << 8) | 
+		Clamp(fragment->Color.z * wsp);
 }
 
 __host__ void ClearBuffers()
@@ -358,7 +416,7 @@ void Begin()
 
 void End()
 {
-	CopyToFrameBuffer << <dim3((width + 16 - 1) / 16, (height + 16 - 1) / 16), dim3(16, 16) >> > (fragmentBuffer, framebuf, width, height);
+	CopyToFrameBuffer << <dim3((width + 16 - 1) / 16, (height + 16 - 1) / 16), dim3(16, 16) >> > (fragmentBuffer, camera, camera, framebuf, width, height);
 
 	cudaMemcpyToArray(framebuf_device, 0, 0, framebuf, width * height * sizeof(int), cudaMemcpyDeviceToDevice);
 }
@@ -373,9 +431,10 @@ void DrawModel(RasterizerModel* model)
 	Assembler << <assemblerGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (model->vertexBufferOut, model->primitivesBuffer, model->indexBuffer, model->numOfFaces, camera, true, width, height);
 
 	primitiveCount = Compact(model->numOfFaces, compactionOutput, model->primitivesBuffer);
-	cudaMemcpy(model->primitivesBuffer, compactionOutput, primitiveCount * sizeof(Triangle), cudaMemcpyDeviceToDevice);
+	//cudaMemcpy(model->primitivesBuffer, compactionOutput, primitiveCount * sizeof(Triangle), cudaMemcpyDeviceToDevice);
 
-	RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (model->primitivesBuffer, depth, fragmentBuffer, width);
+	RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (compactionOutput, depth, fragmentBuffer, width);
+	RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (compactionOutput, depth, fragmentBuffer, width);
 
 	//RasterizeWireframe<< <numOfFaces, 3 >> > (primitivesBuffer, depth, fragmentBuffer, width, height, numOfFaces);
 }

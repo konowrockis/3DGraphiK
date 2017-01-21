@@ -16,8 +16,8 @@
 
 #include "ModelLoader.h"
 
-int width = 1920;
-int height = 1080;
+int width = 640;
+int height = 480;
 bool isLeftMousePressed = false;
 bool isRightMousePressed = false;
 bool isMiddleMousePressed = false;
@@ -125,7 +125,7 @@ int main()
 	if (!glfwInit())
 		exit(EXIT_FAILURE);
 
-	GLFWwindow* window = glfwCreateWindow(width, height, "3DGraphiK", glfwGetPrimaryMonitor(), NULL);
+	GLFWwindow* window = glfwCreateWindow(width, height, "3DGraphiK", /*glfwGetPrimaryMonitor()*/NULL, NULL);
 
 	if (!window)
 	{
@@ -137,7 +137,7 @@ int main()
 	glfwSetKeyCallback(window, key_callback);
 	glfwSetCursorPosCallback(window, mouseMoveCallback);
 	glfwSetMouseButtonCallback(window, mousePressCallback);
-	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	//glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
 	glewExperimental = GL_TRUE;
 	if (glewInit() != GLEW_OK) {
@@ -160,6 +160,7 @@ int main()
 	glEnable(GL_TEXTURE_2D);
 
 	RasterizerModel* m = CreateModel(ModelLoader::LoadModel("Assets\\teapot.off"));
+	RasterizerModel* g = CreateModel(ModelLoader::LoadModel("Assets\\mushroom.off"));
 
 	while (!glfwWindowShouldClose(window)) 
 	{
@@ -177,6 +178,8 @@ int main()
 
 		glm::mat4 translate = glm::translate(ViewMatrix, translation);
 		glm::mat4 rotate = glm::toMat4(rotation);
+		//glm::inverse(translate * rotate) * glm::vec4(1, 1, 1, 0)
+
 		SetTransformation(translate * rotate, glm::vec4(-translation, 1) * rotate);
 
 		Begin();

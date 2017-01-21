@@ -23,8 +23,9 @@ void ModelLoader::CreateColors(Model* model)
 
 	for (int i = 0; i < model->numOfVertices; i++)
 	{
-		model->colors[i] = make_float3((float)rand() / RAND_MAX, (float)rand() / RAND_MAX, (float)rand() / RAND_MAX);
-		//colors[i] = new Vector3D(0.85, 0.2, 0.2);
+		//model->colors[i] = make_float3((float)rand() / RAND_MAX, (float)rand() / RAND_MAX, (float)rand() / RAND_MAX);
+		model->colors[i] = make_float3(0.85, 0.2, 0.2);
+
 	}
 }
 
@@ -101,7 +102,7 @@ void ModelLoader::ComputeNormals(Model* model)
 		float3 v1 = model->vertices[model->indices[i * 3 + 1]] - model->vertices[model->indices[i * 3]];
 		float3 v2 = model->vertices[model->indices[i * 3 + 2]] - model->vertices[model->indices[i * 3]];
 
-		normals[i] = norm(cross(v1, v2));
+		normals[i] = norm(cross(v2, v1));
 	}
 
 	for (int i = 0; i < model->numOfVertices; i++)
@@ -109,7 +110,7 @@ void ModelLoader::ComputeNormals(Model* model)
 		float3 v = make_float3(0, 0, 0);
 		int count = 0;
 
-		for (int j = 0; j < model->numOfVertices * 3; j++)
+		for (int j = 0; j < model->numOfFaces * 3; j++)
 		{
 			if (model->indices[j] == i)
 			{
@@ -118,10 +119,14 @@ void ModelLoader::ComputeNormals(Model* model)
 			}
 		}
 
-		if (count > 1)
+		if (count >= 1)
 		{
 			float3 a = norm(v / count);
 			model->normals[i] = norm(v / count);
+		}
+		else
+		{
+
 		}
 	}
 
