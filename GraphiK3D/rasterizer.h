@@ -8,7 +8,12 @@
 
 void Init();
 RasterizerModel* CreateModel(Model* model);
-void SetTransformation(glm::mat4x4 transformation, glm::vec3 camera);
+
+void SetTransformation(glm::mat4x4 transformation);
+void SetLightParams(glm::vec3 diffuseColor, glm::vec3 specularColor, glm::vec3 ambientColor, float diffuseConstant, float specularConstant, float ambientConstant, int shininess);
+void SetCameraPosition(glm::vec3 camera);
+void SetLightPosition(glm::vec3 lightPosition);
+
 void FreeRasterizer();
 void FreeModel(RasterizerModel* Model);
 void Resize(unsigned int w, unsigned int h, GLuint framebufferTexture);

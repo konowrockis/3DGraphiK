@@ -21,11 +21,13 @@ void ModelLoader::CreateColors(Model* model)
 
 	model->colors = new float3[model->numOfVertices];
 
+	float3 color = make_float3((float)rand() / RAND_MAX, (float)rand() / RAND_MAX, (float)rand() / RAND_MAX);
+	//float3 color = make_float3(0.85, 0.2, 0.2);
+
 	for (int i = 0; i < model->numOfVertices; i++)
 	{
 		//model->colors[i] = make_float3((float)rand() / RAND_MAX, (float)rand() / RAND_MAX, (float)rand() / RAND_MAX);
-		model->colors[i] = make_float3(0.85, 0.2, 0.2);
-
+		model->colors[i] = color;
 	}
 }
 

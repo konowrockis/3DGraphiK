@@ -39,27 +39,50 @@ inline void __getLastCudaError(const char *errorMessage, const char *file, const
 	}
 }
 
-static float4* transformation;
-static float3 camera;
-static int width;
-static int height;
+enum RenderModeType { RenderModeWireframe, RenderModeTriangles };
+enum BackCullingType { BackCullingCCW, BackCullingCW, BackCullingNone };
+enum RendererOutputType { RenderOutputColor, RendererOutputNormal, RendererOutputZBuffer };
 
-static int* depth = NULL;
-static Fragment* fragmentBuffer = NULL;
+struct SceneParams_t
+{
+	float3 CameraPosition;
+	float3 LightPosition;
+	float4* Transformation;
 
-static bool backCullingEnabled = true;
-static bool renderWireframe = false;
+	BackCullingType BackCulling;
+	RenderModeType RenderMode;
+	RendererOutputType RendererOutput;
+	
+	bool LightEnabled;
+	float3 LightDiffuseColor;
+	float3 LightSpecularColor;
+	float3 LightAmbientColor;
+	float LightDiffuseConstant;
+	float LightSpecularConstant;
+	float LighAmbientConstant;
+	int LightShininess;
+} SceneParams;
 
-static cudaArray_t framebuf_device;
-static int* framebuf;
-static Triangle* compactionOutput;
+struct Rasterizer_t
+{
+	int Width;
+	int Height;
+
+	int* DepthBuffer;
+	Fragment* FragmentBuffer;
+
+	cudaArray_t DeviceFrameBuffer;
+	int* FrameBuffer;
+
+	Triangle* CompactionOutput;
+} Rasterizer;
 
 void Init()
 {
 	cudaSetDevice(0);
 	getLastCudaError("cudaSetDevice failed");
 
-	cudaMalloc((void**)&transformation, 16 * sizeof(float));
+	cudaMalloc((void**)&SceneParams.Transformation, 16 * sizeof(float));
 }
 
 RasterizerModel* CreateModel(Model* model)
@@ -73,7 +96,7 @@ RasterizerModel* CreateModel(Model* model)
 	cudaMalloc((void**)&rasterizerModel->vertexBufferOut, model->numOfVertices * sizeof(VertexShaderOut));
 	cudaMalloc((void**)&rasterizerModel->primitivesBuffer, model->numOfFaces * sizeof(Triangle));
 	cudaMalloc((void**)&rasterizerModel->indexBuffer, model->numOfFaces * 3 * sizeof(int));
-	cudaMalloc((void**)&compactionOutput, model->numOfFaces * sizeof(Triangle));
+	cudaMalloc((void**)&Rasterizer.CompactionOutput, model->numOfFaces * sizeof(Triangle));
 
 	for (int i = 0; i < model->numOfVertices; i++)
 	{
@@ -86,36 +109,42 @@ RasterizerModel* CreateModel(Model* model)
 	return rasterizerModel;
 }
 
-void SetTransformation(glm::mat4x4 transf, glm::vec3 cam)
+void SetLightParams(glm::vec3 diffuseColor, glm::vec3 specularColor, glm::vec3 ambientColor, float diffuseConstant, float specularConstant, float ambientConstant, int shininess)
 {
-	cudaMemcpy(transformation, &transf, sizeof(glm::mat4x4), cudaMemcpyHostToDevice);
 
-	camera = make_float3(cam.x, cam.y, cam.z);
 }
 
-void SetProjectionMatrix(glm::mat4x4 transf)
+void SetTransformation(glm::mat4x4 transf)
 {
-	cudaMemcpy(transformation, &transf, sizeof(glm::mat4x4), cudaMemcpyHostToDevice);
+	cudaMemcpy(SceneParams.Transformation, &transf, sizeof(glm::mat4x4), cudaMemcpyHostToDevice);
 }
 
-void Resize(unsigned int w, unsigned int h, GLuint texture)
+void SetCameraPosition(glm::vec3 camera)
 {
-	width = w;
-	height = h;
+	SceneParams.CameraPosition = make_float3(camera.x, camera.y, camera.z);
+}
 
-	if (depth != NULL) cudaFree(depth);
-	if (fragmentBuffer != NULL) cudaFree(fragmentBuffer);
+void SetLightPosition(glm::vec3 light)
+{
+	SceneParams.LightPosition = make_float3(light.x, light.y, light.z);
+}
 
-	cudaMalloc((void**)&depth, width * height * sizeof(int));
-	getLastCudaError("cudaMalloc depth failed");
+void Resize(unsigned int width, unsigned int height, GLuint texture)
+{
+	Rasterizer.Width = width;
+	Rasterizer.Height = height;
 
-	cudaMalloc((void**)&fragmentBuffer, width * height * sizeof(Fragment));
+	if (Rasterizer.DepthBuffer != NULL) cudaFree(Rasterizer.DepthBuffer);
+	if (Rasterizer.DepthBuffer != NULL) cudaFree(Rasterizer.FragmentBuffer);
+
+	cudaMalloc((void**)&Rasterizer.DepthBuffer, width * height * sizeof(int));
+	getLastCudaError("cudaMalloc depthBuffer failed");
+
+	cudaMalloc((void**)&Rasterizer.FragmentBuffer, width * height * sizeof(Fragment));
 	getLastCudaError("cudaMalloc fragmentBuffer failed");
 
-	cudaMalloc((void**)&framebuf, width * height * sizeof(int));
-	getLastCudaError("cudaMalloc framebuf failed");
-
-
+	cudaMalloc((void**)&Rasterizer.FrameBuffer, width * height * sizeof(int));
+	getLastCudaError("cudaMalloc frameBuffer failed");
 
 	cudaGraphicsResource* resource;
 
@@ -125,7 +154,7 @@ void Resize(unsigned int w, unsigned int h, GLuint texture)
 	cudaGraphicsMapResources(1, &resource, 0);
 	getLastCudaError("cuGraphicsMapResources failed");
 
-	cudaGraphicsSubResourceGetMappedArray(&framebuf_device, resource, 0, 0);
+	cudaGraphicsSubResourceGetMappedArray(&Rasterizer.DeviceFrameBuffer, resource, 0, 0);
 	getLastCudaError("cuGraphicsSubResourceGetMappedArray failed");
 
 	cudaGraphicsUnmapResources(1, &resource, 0);
@@ -134,14 +163,20 @@ void Resize(unsigned int w, unsigned int h, GLuint texture)
 
 void FreeRasterizer()
 {
-	cudaFree(depth);
-	cudaFree(fragmentBuffer);
-	cudaFree(transformation);
+	cudaFree(Rasterizer.CompactionOutput);
+	cudaFree(Rasterizer.DepthBuffer);
+	cudaFree(Rasterizer.FragmentBuffer);
+	cudaFree(Rasterizer.FrameBuffer);
 }
 
 void FreeModel(RasterizerModel* model)
 {
+	cudaFree(model->indexBuffer);
+	cudaFree(model->primitivesBuffer);
+	cudaFree(model->vertexBufferIn);
+	cudaFree(model->vertexBufferOut);
 
+	delete model;
 }
 
 __forceinline__ __device__ float3 transform(float4* transformation, float3 v)
@@ -199,7 +234,7 @@ __global__ void Assembler(VertexShaderOut* vertexOut, Triangle* primitivesBuffer
 	}
 }
 
-__device__ void line(float3 start, float3 end, Fragment* depthBuffer, int width, int height)
+__device__ void line(float3 start, float3 end, Fragment* frameBuffer, int width, int height)
 {
 	float3 color = make_float3(1, 1, 1);
 
@@ -217,7 +252,7 @@ __device__ void line(float3 start, float3 end, Fragment* depthBuffer, int width,
 
 	if (x1 > 0 && x1 < width && y1 > 0 && y1 < height)
 	{
-		depthBuffer[x1 + y1 * width].Color = color;
+		frameBuffer[x1 + y1 * width].Color = color;
 	}
 
 	while (!((x1 == x2) && (y1 == y2)))
@@ -236,7 +271,7 @@ __device__ void line(float3 start, float3 end, Fragment* depthBuffer, int width,
 
 		if (x1 > 0 && x1 < width && y1 > 0 && y1 < height)
 		{
-			depthBuffer[x1 + y1 * width].Color = color;
+			frameBuffer[x1 + y1 * width].Color = color;
 		}
 	}
 }
@@ -405,8 +440,8 @@ __global__ void CopyToFrameBuffer(Fragment* fragmentBuffer, float3 lightPos, flo
 
 __host__ void ClearBuffers()
 {
-	cudaMemset(depth, 5000000, width * height * sizeof(int));
-	cudaMemset(fragmentBuffer, 0, width * height * sizeof(Fragment));
+	cudaMemset(Rasterizer.DepthBuffer, 5000000, Rasterizer.Width * Rasterizer.Height * sizeof(int));
+	cudaMemset(Rasterizer.FragmentBuffer, 0, Rasterizer.Width * Rasterizer.Height * sizeof(Fragment));
 }
 
 void Begin()
@@ -416,9 +451,9 @@ void Begin()
 
 void End()
 {
-	CopyToFrameBuffer << <dim3((width + 16 - 1) / 16, (height + 16 - 1) / 16), dim3(16, 16) >> > (fragmentBuffer, camera, camera, framebuf, width, height);
+	CopyToFrameBuffer << <dim3((Rasterizer.Width + 16 - 1) / 16, (Rasterizer.Height + 16 - 1) / 16), dim3(16, 16) >> > (Rasterizer.FragmentBuffer, SceneParams.LightPosition, SceneParams.CameraPosition, Rasterizer.FrameBuffer, Rasterizer.Width, Rasterizer.Height);
 
-	cudaMemcpyToArray(framebuf_device, 0, 0, framebuf, width * height * sizeof(int), cudaMemcpyDeviceToDevice);
+	cudaMemcpyToArray(Rasterizer.DeviceFrameBuffer, 0, 0, Rasterizer.FrameBuffer, Rasterizer.Width * Rasterizer.Height * sizeof(int), cudaMemcpyDeviceToDevice);
 }
 
 void DrawModel(RasterizerModel* model)
@@ -427,14 +462,14 @@ void DrawModel(RasterizerModel* model)
 	int assemblerGridSize = (model->numOfFaces - 1) / VERTEX_SHADER_BLOCK_SIZE + 1;
 	int primitiveCount = model->numOfFaces;
 
-	VertexShader << <vertexShaderGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (model->vertexBufferIn, model->vertexBufferOut, transformation, model->numOfVertices);
-	Assembler << <assemblerGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (model->vertexBufferOut, model->primitivesBuffer, model->indexBuffer, model->numOfFaces, camera, true, width, height);
+	VertexShader << <vertexShaderGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (model->vertexBufferIn, model->vertexBufferOut, SceneParams.Transformation, model->numOfVertices);
+	Assembler << <assemblerGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (model->vertexBufferOut, model->primitivesBuffer, model->indexBuffer, model->numOfFaces, SceneParams.CameraPosition, true, Rasterizer.Width, Rasterizer.Height);
 
-	primitiveCount = Compact(model->numOfFaces, compactionOutput, model->primitivesBuffer);
+	primitiveCount = Compact(model->numOfFaces, Rasterizer.CompactionOutput, model->primitivesBuffer);
 	//cudaMemcpy(model->primitivesBuffer, compactionOutput, primitiveCount * sizeof(Triangle), cudaMemcpyDeviceToDevice);
 
-	RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (compactionOutput, depth, fragmentBuffer, width);
-	RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (compactionOutput, depth, fragmentBuffer, width);
+	RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (Rasterizer.CompactionOutput, Rasterizer.DepthBuffer, Rasterizer.FragmentBuffer, Rasterizer.Width);
+	RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (Rasterizer.CompactionOutput, Rasterizer.DepthBuffer, Rasterizer.FragmentBuffer, Rasterizer.Width);
 
 	//RasterizeWireframe<< <numOfFaces, 3 >> > (primitivesBuffer, depth, fragmentBuffer, width, height, numOfFaces);
 }

@@ -15,6 +15,7 @@
 #include <time.h>
 
 #include "ModelLoader.h"
+#include <Windows.h>
 
 int width = 640;
 int height = 480;
@@ -25,8 +26,11 @@ double lastMouseX = 0;
 double lastMouseY = 0;
 
 glm::quat rotation;
-glm::vec3 translation(0, -1, 6);
+glm::vec4 translation = glm::vec4(0, -1, 6, 1);
 glm::mat4x4 ViewMatrix;
+
+glm::vec4 lightPosition = glm::vec4(0, 0, -30, 1);
+glm::quat lightRotation;
 
 static void error_callback(int error, const char* description)
 {
@@ -35,8 +39,33 @@ static void error_callback(int error, const char* description)
 
 static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-	if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
-		glfwSetWindowShouldClose(window, GLFW_TRUE);
+	if (action == GLFW_PRESS)
+	{
+		if (key == GLFW_KEY_ESCAPE)
+		{
+			glfwSetWindowShouldClose(window, GLFW_TRUE);
+		}
+		else if (key == GLFW_KEY_SPACE)
+		{
+			CHOOSECOLOR cc;                 // common dialog box structure 
+			static COLORREF acrCustClr[16]; // array of custom colors 
+			HBRUSH hbrush;                  // brush handle
+			static DWORD rgbCurrent;        // initial color selection
+
+			ZeroMemory(&cc, sizeof(cc));
+			cc.lStructSize = sizeof(cc);
+			cc.hwndOwner = NULL;
+			cc.lpCustColors = (LPDWORD)acrCustClr;
+			cc.rgbResult = rgbCurrent;
+			cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+
+			if (ChooseColor(&cc) == TRUE)
+			{
+				hbrush = CreateSolidBrush(cc.rgbResult);
+				rgbCurrent = cc.rgbResult;
+			}
+		}
+	}
 }
 
 static void mouseMoveCallback(GLFWwindow *window, double x, double y)
@@ -48,16 +77,29 @@ static void mouseMoveCallback(GLFWwindow *window, double x, double y)
 	}
 	else if (isRightMousePressed) 
 	{
-		float newVal = translation.z + (y - lastMouseY) / 50;
-
-		if (newVal > 1 && newVal < 30)
+		if (isMiddleMousePressed)
 		{
-			translation.z = newVal;
+			float newVal = lightPosition.z + (y - lastMouseY) / 30;
+
+			if (newVal > -40 && newVal < 40)
+			{
+				lightPosition.z = newVal;
+			}
+		}
+		else
+		{
+			float newVal = translation.z + (y - lastMouseY) / 50;
+
+			if (newVal > 1 && newVal < 30)
+			{
+				translation.z = newVal;
+			}
 		}
 	}
 	else if (isMiddleMousePressed) 
 	{
-
+		float easingFactor = 50;
+		lightRotation = glm::quat(glm::vec3((y - lastMouseY) / easingFactor, (x - lastMouseX) / easingFactor, 0)) * lightRotation;
 	}
 
 	lastMouseX = x;
@@ -159,8 +201,8 @@ int main()
 	glBindTexture(GL_TEXTURE_2D, texture);
 	glEnable(GL_TEXTURE_2D);
 
-	RasterizerModel* m = CreateModel(ModelLoader::LoadModel("Assets\\teapot.off"));
 	RasterizerModel* g = CreateModel(ModelLoader::LoadModel("Assets\\mushroom.off"));
+	RasterizerModel* m = CreateModel(ModelLoader::LoadModel("Assets\\teapot.off"));
 
 	while (!glfwWindowShouldClose(window)) 
 	{
@@ -176,14 +218,13 @@ int main()
 			printf("%f\n", fps);
 		}
 
-		glm::mat4 translate = glm::translate(ViewMatrix, translation);
-		glm::mat4 rotate = glm::toMat4(rotation);
-		//glm::inverse(translate * rotate) * glm::vec4(1, 1, 1, 0)
-
-		SetTransformation(translate * rotate, glm::vec4(-translation, 1) * rotate);
+		SetTransformation(glm::translate(ViewMatrix, glm::vec3(translation)) * glm::toMat4(rotation));
+		SetCameraPosition(-translation * glm::toMat4(rotation));
+		SetLightPosition(lightPosition * glm::toMat4(lightRotation));
 
 		Begin();
 		DrawModel(m);
+
 		End();
 
 		glBegin(GL_QUADS);
@@ -196,6 +237,10 @@ int main()
 		glfwSwapBuffers(window);
 		glfwPollEvents();
 	}
+
+	FreeModel(m);
+	FreeModel(g);
+	FreeRasterizer();
 
 	glfwDestroyWindow(window);
 	glfwTerminate();
