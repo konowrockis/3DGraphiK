@@ -19,6 +19,7 @@
     <ClInclude Include="structs.h" />
     <ClInclude Include="VectorUtils.h" />
     <ClInclude Include="stream_compaction.h" />
+    <ClInclude Include="font.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Assets\mushroom.off">
@@ -30,5 +31,16 @@
     <None Include="Assets\test.off">
       <Filter>Assets</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="Assets\texture.bmp">
+      <Filter>Assets</Filter>
+    </Image>
+    <Image Include="Assets\texture2.bmp">
+      <Filter>Assets</Filter>
+    </Image>
+    <Image Include="Assets\texture3.bmp">
+      <Filter>Assets</Filter>
+    </Image>
   </ItemGroup>
 </Project>

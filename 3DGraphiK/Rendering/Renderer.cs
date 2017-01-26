@@ -65,7 +65,7 @@ namespace GraphiK3D.Rendering
 
         public void Init()
         {
-            model = ModelLoader.Load(@"Assets\mushroom.off");
+            model = ModelLoader.Load(@"Assets\test.off");
             projectionMatrix = GetProjectionMatrix();
 
             vertexBufferIn = new VertexShaderIn[model.Vertices.Length];
@@ -106,7 +106,7 @@ namespace GraphiK3D.Rendering
 
             VertexShader.Apply(vertexBufferIn, vertexBufferOut, transformation);
             PrimitivesAssembler.Assemble(vertexBufferOut, model.Indices, primitivesBuffer, model.Normals);
-            //BackFaceCulling.Cull(primitivesBuffer, camera);
+            BackFaceCulling.Cull(primitivesBuffer, camera);
 
             for (int i = 0; i < model.NumberOfTriangles; i++)
             {

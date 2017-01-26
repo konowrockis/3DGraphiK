@@ -3,6 +3,8 @@
 #include <device_launch_parameters.h>
 #include "rasterizer.h"
 #include "VectorUtils.h"
+#include "font.h"
+#include <cstring>
 
 #include <stdio.h>
 #include <time.h>
@@ -22,6 +24,7 @@
 #define VERTEX_SHADER_BLOCK_SIZE 256
 #define RASTERIZER_BLOCK_SIZE 9
 #define FRAMEBUFFER_BLOCK_SIZE 256
+#define MAXIMUM_LINES 20
 
 #define getLastCudaError(msg) __getLastCudaError (msg, __FILE__, __LINE__)
 inline void __getLastCudaError(const char *errorMessage, const char *file, const int line)
@@ -35,33 +38,14 @@ inline void __getLastCudaError(const char *errorMessage, const char *file, const
 		fprintf(log, "%s(%i) : getLastCudaError() CUDA error : %s : (%d) %s.\n",
 			file, line, errorMessage, (int)err, cudaGetErrorString(err));
 
+		printf("%s(%i) : getLastCudaError() CUDA error : %s : (%d) %s.\n",
+			file, line, errorMessage, (int)err, cudaGetErrorString(err));
+
 		fclose(log);
 	}
 }
 
-enum RenderModeType { RenderModeWireframe, RenderModeTriangles };
-enum BackCullingType { BackCullingCCW, BackCullingCW, BackCullingNone };
-enum RendererOutputType { RenderOutputColor, RendererOutputNormal, RendererOutputZBuffer };
-
-struct SceneParams_t
-{
-	float3 CameraPosition;
-	float3 LightPosition;
-	float4* Transformation;
-
-	BackCullingType BackCulling;
-	RenderModeType RenderMode;
-	RendererOutputType RendererOutput;
-	
-	bool LightEnabled;
-	float3 LightDiffuseColor;
-	float3 LightSpecularColor;
-	float3 LightAmbientColor;
-	float LightDiffuseConstant;
-	float LightSpecularConstant;
-	float LighAmbientConstant;
-	int LightShininess;
-} SceneParams;
+SceneParams_t SceneParams;
 
 struct Rasterizer_t
 {
@@ -75,7 +59,10 @@ struct Rasterizer_t
 	int* FrameBuffer;
 
 	Triangle* CompactionOutput;
+	int CompactionOutputSize;
 } Rasterizer;
+
+TextLine* TextLines;
 
 void Init()
 {
@@ -83,6 +70,53 @@ void Init()
 	getLastCudaError("cudaSetDevice failed");
 
 	cudaMalloc((void**)&SceneParams.Transformation, 16 * sizeof(float));
+	cudaMalloc((void**)&TextLines, sizeof(TextLine) * MAXIMUM_LINES);
+}
+
+void SetLine(int i, TextLine line)
+{
+	cudaMemcpy(TextLines + i, &line, sizeof(TextLine), cudaMemcpyHostToDevice);
+}
+
+Texture* LoadTexture(int textureWidth, int textureHeight, void* srcTexture)
+{
+	Texture* tex = new Texture;
+
+	cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float4>();
+	getLastCudaError("cudaCreateChannelDesc failed");
+	cudaMallocArray(&tex->cuArray, &channelDesc, textureWidth, textureHeight);
+	getLastCudaError("texture array mallocArray failed");
+
+	cudaMemcpyToArray(tex->cuArray, 0, 0, srcTexture, textureWidth * textureHeight * 4 * sizeof(float), cudaMemcpyHostToDevice);
+
+	// Specify texture
+	struct cudaResourceDesc resDesc;
+	memset(&resDesc, 0, sizeof(resDesc));
+	resDesc.resType = cudaResourceTypeArray;
+	resDesc.res.array.array = tex->cuArray;
+
+	// Specify texture object parameters
+	struct cudaTextureDesc texDesc;
+	memset(&texDesc, 0, sizeof(texDesc));
+	texDesc.addressMode[0] = cudaAddressModeWrap;
+	texDesc.addressMode[1] = cudaAddressModeWrap;
+	texDesc.filterMode = cudaFilterModeLinear;
+	texDesc.readMode = cudaReadModeElementType;
+	texDesc.normalizedCoords = 1;
+
+	// Create texture object
+	cudaCreateTextureObject(&tex->Tex, &resDesc, &texDesc, NULL);
+	getLastCudaError("createTexture object failed");
+
+	return tex;
+}
+
+void FreeTexture(Texture* texture)
+{
+	cudaFreeArray(texture->cuArray);
+	cudaDestroyTextureObject(texture->Tex);
+
+	delete texture;
 }
 
 RasterizerModel* CreateModel(Model* model)
@@ -96,7 +130,18 @@ RasterizerModel* CreateModel(Model* model)
 	cudaMalloc((void**)&rasterizerModel->vertexBufferOut, model->numOfVertices * sizeof(VertexShaderOut));
 	cudaMalloc((void**)&rasterizerModel->primitivesBuffer, model->numOfFaces * sizeof(Triangle));
 	cudaMalloc((void**)&rasterizerModel->indexBuffer, model->numOfFaces * 3 * sizeof(int));
-	cudaMalloc((void**)&Rasterizer.CompactionOutput, model->numOfFaces * sizeof(Triangle));
+
+	if (Rasterizer.CompactionOutput == NULL)
+	{
+		cudaMalloc((void**)&Rasterizer.CompactionOutput, model->numOfFaces * sizeof(Triangle));
+		Rasterizer.CompactionOutputSize = model->numOfFaces;
+	}
+	else if (Rasterizer.CompactionOutputSize < model->numOfFaces)
+	{
+		cudaFree(Rasterizer.CompactionOutput);
+		cudaMalloc((void**)&Rasterizer.CompactionOutput, model->numOfFaces * sizeof(Triangle));
+		Rasterizer.CompactionOutputSize = model->numOfFaces;
+	}
 
 	for (int i = 0; i < model->numOfVertices; i++)
 	{
@@ -167,6 +212,7 @@ void FreeRasterizer()
 	cudaFree(Rasterizer.DepthBuffer);
 	cudaFree(Rasterizer.FragmentBuffer);
 	cudaFree(Rasterizer.FrameBuffer);
+	cudaFree(TextLines);
 }
 
 void FreeModel(RasterizerModel* model)
@@ -203,7 +249,7 @@ __global__ void VertexShader(const VertexShaderIn* vertexIn, VertexShaderOut* ve
 	vertexOut[index].Normal = vertexIn[index].Normal;
 }
 
-__global__ void Assembler(VertexShaderOut* vertexOut, Triangle* primitivesBuffer, int* indices, int facesCount, float3 camera, bool cullBackface, int width, int height)
+__global__ void Assembler(VertexShaderOut* vertexOut, Triangle* primitivesBuffer, int* indices, int facesCount, float3 camera, BackFaceCullingType backfaceCulling, int width, int height)
 {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -217,11 +263,24 @@ __global__ void Assembler(VertexShaderOut* vertexOut, Triangle* primitivesBuffer
 	float3 v1 = triangle->v2.ModelPos - triangle->v1.ModelPos;
 	float3 v2 = triangle->v3.ModelPos - triangle->v1.ModelPos;
 
-	triangle->Visible = !cullBackface ||
-		dot(
+	if (backfaceCulling == BackCullingNone)
+	{
+		triangle->Visible = true;
+	}
+	else if (backfaceCulling == BackCullingCW)
+	{
+		triangle->Visible = dot(
 			triangle->v1.ModelPos - camera,
 			norm(cross(v1, v2))
 		) > 0;
+	}
+	else
+	{
+		triangle->Visible = dot(
+			triangle->v1.ModelPos - camera,
+			norm(cross(v1, v2))
+		) < 0;
+	}
 	
 	triangle->minx = glm::floor(glm::max(glm::min(glm::min(triangle->v1.Pos.x, triangle->v2.Pos.x), triangle->v3.Pos.x), 0.f));
 	triangle->miny = glm::floor(glm::max(glm::min(glm::min(triangle->v1.Pos.y, triangle->v2.Pos.y), triangle->v3.Pos.y), 0.f));
@@ -276,7 +335,7 @@ __device__ void line(float3 start, float3 end, Fragment* frameBuffer, int width,
 	}
 }
 
-__global__ void RasterizeWireframe(Triangle* primitivesBuffer, int* depth, Fragment* fragmentBuffer, int width, int height, int primitivesCount)
+__global__ void RasterizeWireframe(Triangle* primitivesBuffer, int* depth, Fragment* fragmentBuffer, int width, int height)
 {
 	Triangle* triangle = &primitivesBuffer[blockIdx.x];
 	if (!triangle->Visible) return;
@@ -296,7 +355,7 @@ __global__ void RasterizeWireframe(Triangle* primitivesBuffer, int* depth, Fragm
 	line(start, end, fragmentBuffer, width, height);
 }
 
-__global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragment* fragmentBuffer, int width)
+__global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragment* fragmentBuffer, int width, cudaTextureObject_t tex)
 {
 	Triangle* triangle;
 
@@ -348,10 +407,6 @@ __global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragme
 				{
 					Fragment* fragment = fragmentBuffer + i;
 
-					/*fragment->Position.x = vals[0].x * alpha + vals[1].x * beta + vals[2].x * gamma;
-					fragment->Position.y = vals[0].y * alpha + vals[1].y * beta + vals[2].y * gamma;
-					fragment->Position.z = vals[0].z * alpha + vals[1].z * beta + vals[2].z * gamma;*/
-
 					fragment->Position.x = vals[9].x * alpha + vals[10].x * beta + vals[11].x * gamma;
 					fragment->Position.y = vals[9].y * alpha + vals[10].y * beta + vals[11].y * gamma;
 					fragment->Position.z = vals[9].z * alpha + vals[10].z * beta + vals[11].z * gamma;
@@ -360,9 +415,23 @@ __global__ void RasterizeTriangle(Triangle* primitivesBuffer, int* depth, Fragme
 					fragment->Normal.y = vals[3].y * alpha + vals[4].y * beta + vals[5].y * gamma;
 					fragment->Normal.z = vals[3].z * alpha + vals[4].z * beta + vals[5].z * gamma;
 
-					fragment->Color.x = vals[6].x * alpha + vals[7].x * beta + vals[8].x * gamma;
-					fragment->Color.y = vals[6].y * alpha + vals[7].y * beta + vals[8].y * gamma;
-					fragment->Color.z = vals[6].z * alpha + vals[7].z * beta + vals[8].z * gamma;
+					if (tex == NULL)
+					{
+						fragment->Color.x = vals[6].x * alpha + vals[7].x * beta + vals[8].x * gamma;
+						fragment->Color.y = vals[6].y * alpha + vals[7].y * beta + vals[8].y * gamma;
+						fragment->Color.z = vals[6].z * alpha + vals[7].z * beta + vals[8].z * gamma;
+					}
+					else
+					{
+						float4 color = tex2D<float4>(tex, 
+							vals[6].x * alpha + vals[7].x * beta + vals[8].x * gamma, 
+							vals[6].y * alpha + vals[7].y * beta + vals[8].y * gamma
+						);
+
+						fragment->Color.x = color.x;
+						fragment->Color.y = color.y;
+						fragment->Color.z = color.z;
+					}
 				}
 			}
 		}
@@ -376,72 +445,95 @@ __device__ __forceinline__ int Clamp(float v)
 	return v * 255;
 }
 
-__global__ void CopyToFrameBuffer(Fragment* fragmentBuffer, float3 lightPos, float3 cameraPos, int* backBuffer, int width, int height)
+__global__ void CopyToFrameBuffer(Fragment* fragmentBuffer, int* backBuffer, const int* depthBuffer, const int width, const int height, const SceneParams_t scene)
 {
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	int y = blockIdx.y * blockDim.y + threadIdx.y;
 
 	if (x >= width || y >= height) return;
 
-	//frameBuffer[i] = (Clamp(c.x) << 16) | (Clamp(c.y) << 8) | Clamp(c.z);
 	int* pixel = backBuffer + y * width + x;
 	Fragment* fragment = fragmentBuffer + y * width + x;
 
-	//
-	//pixel[0] = (Clamp((fragment->Normal.x + 1) / 2) << 16) | (Clamp((fragment->Normal.y + 1) / 2) << 8) | Clamp((fragment->Normal.z + 1) / 2);
-	//return;
+	if (scene.RenderOutput == RenderOutputNormal)
+	{
+		pixel[0] = (Clamp((fragment->Normal.x + 1) / 2) << 16) | (Clamp((fragment->Normal.y + 1) / 2) << 8) | Clamp((fragment->Normal.z + 1) / 2);
+		return;
+	}
+	else if (scene.RenderOutput == RenderOutputZBuffer)
+	{
+		int z = Clamp(((float)*(depthBuffer + y * width + x)) / -17000.f);
+		pixel[0] = (z << 16) | (z << 8) | z;
+		return;
+	}
 
-	if (fragment->Position.x == 0 && fragment->Position.y == 0 && fragment->Position.z == 0)
+	if (!scene.LightEnabled || (fragment->Position.x == 0 && fragment->Position.y == 0 && fragment->Position.z == 0))
 	{
 		pixel[0] = (Clamp(fragment->Color.x) << 16) | (Clamp(fragment->Color.y) << 8) | Clamp(fragment->Color.z);
 		return;
 	}
 
-	const float ks = 0.5, kd = 0.5, ka = 0;
+	float3 L, V, R;
 
-	lightPos.x = lightPos.x - fragment->Position.x;
-	lightPos.y = lightPos.y - fragment->Position.y;
-	lightPos.z = lightPos.z - fragment->Position.z;
+	L.x = scene.LightPosition.x - fragment->Position.x;
+	L.y = scene.LightPosition.y - fragment->Position.y;
+	L.z = scene.LightPosition.z - fragment->Position.z;
 
-	float len = length(lightPos);
-	lightPos.x /= len;
-	lightPos.y /= len;
-	lightPos.z /= len;
+	float len = length(L);
+	L.x /= len; L.y /= len; L.z /= len;
 
-	float wsp = dot(fragment->Normal, lightPos);
+	float kd = dot(fragment->Normal, L);
 
-	float3 r;
-	r.x = 2 * wsp * fragment->Normal.x - lightPos.x;
-	r.y = 2 * wsp * fragment->Normal.y - lightPos.y;
-	r.z = 2 * wsp * fragment->Normal.z - lightPos.z;
+	R.x = 2 * kd * fragment->Normal.x - L.x;
+	R.y = 2 * kd * fragment->Normal.y - L.y;
+	R.z = 2 * kd * fragment->Normal.z - L.z;
 
-	len = length(r);
-	r.x /= len;
-	r.y /= len;
-	r.z /= len;
+	len = length(R);
+	R.x /= len; R.y /= len; R.z /= len;
 
-	cameraPos.x = cameraPos.x - fragment->Position.x;
-	cameraPos.y = cameraPos.y - fragment->Position.y;
-	cameraPos.z = cameraPos.z - fragment->Position.z;
+	V.x = scene.CameraPosition.x - fragment->Position.x;
+	V.y = scene.CameraPosition.y - fragment->Position.y;
+	V.z = scene.CameraPosition.z - fragment->Position.z;
 
-	len = length(cameraPos);
-	cameraPos.x /= len;
-	cameraPos.y /= len;
-	cameraPos.z /= len;
+	len = length(V);
+	V.x /= len; V.y /= len; V.z /= len;
 
-	wsp *= kd;
-	wsp += ks * glm::pow(dot(r, cameraPos), 100);
+	kd *= scene.LightDiffuseConstant;
+	float ks = scene.LightSpecularConstant * glm::pow(dot(R, V), scene.LightShininess);
+	float ka = scene.LightAmbientColor.x * scene.LightAmbientConstant;
 
-	pixel[0] = 
-		(Clamp(fragment->Color.x * wsp) << 16) | 
-		(Clamp(fragment->Color.y * wsp) << 8) | 
-		Clamp(fragment->Color.z * wsp);
+	pixel[0] =
+		(Clamp(fragment->Color.x * (ka * scene.LightAmbientColor.x + kd * scene.LightDiffuseColor.x + ks * scene.LightSpecularColor.x)) << 16) |
+		(Clamp(fragment->Color.y * (ka * scene.LightAmbientColor.y + kd * scene.LightDiffuseColor.y + ks * scene.LightSpecularColor.y)) << 8) |
+		Clamp(fragment->Color.z * (ka * scene.LightAmbientColor.z + kd * scene.LightDiffuseColor.z + ks * scene.LightSpecularColor.z));
 }
 
 __host__ void ClearBuffers()
 {
 	cudaMemset(Rasterizer.DepthBuffer, 5000000, Rasterizer.Width * Rasterizer.Height * sizeof(int));
 	cudaMemset(Rasterizer.FragmentBuffer, 0, Rasterizer.Width * Rasterizer.Height * sizeof(Fragment));
+}
+
+__global__ void DrawText(TextLine* lines, int* backBuffer, int width, int color) {
+	TextLine* line = lines + blockIdx.x;
+	int c = threadIdx.x;
+
+	if (line->length < c) return;
+
+	int x = threadIdx.x * CHAR_WIDTH;
+	int y = blockIdx.x * CHAR_HEIGHT;
+
+	int ch = line->text[c];
+
+	for (int i = 0; i < CHAR_HEIGHT; i++) 
+	{
+		for (int j = 0; j < CHAR_WIDTH; j++) 
+		{
+			if (font[ch][i][j]) {
+				backBuffer[(y + i) * width + (x + j)] = color;
+			}
+		}
+	}
 }
 
 void Begin()
@@ -451,27 +543,40 @@ void Begin()
 
 void End()
 {
-	CopyToFrameBuffer << <dim3((Rasterizer.Width + 16 - 1) / 16, (Rasterizer.Height + 16 - 1) / 16), dim3(16, 16) >> > (Rasterizer.FragmentBuffer, SceneParams.LightPosition, SceneParams.CameraPosition, Rasterizer.FrameBuffer, Rasterizer.Width, Rasterizer.Height);
+	CopyToFrameBuffer << <dim3((Rasterizer.Width + 16 - 1) / 16, (Rasterizer.Height + 16 - 1) / 16), dim3(16, 16) >> > (Rasterizer.FragmentBuffer, Rasterizer.FrameBuffer, Rasterizer.DepthBuffer, Rasterizer.Width, Rasterizer.Height, SceneParams);
 
+	DrawText << <MAXIMUM_LINES, 128 >> > (TextLines, Rasterizer.FrameBuffer, Rasterizer.Width, 0xFFFFFF00);
 	cudaMemcpyToArray(Rasterizer.DeviceFrameBuffer, 0, 0, Rasterizer.FrameBuffer, Rasterizer.Width * Rasterizer.Height * sizeof(int), cudaMemcpyDeviceToDevice);
 }
 
-void DrawModel(RasterizerModel* model)
+void DrawModel(RasterizerModel* model, Texture* tex)
 {
 	int vertexShaderGridSize = (model->numOfVertices - 1) / VERTEX_SHADER_BLOCK_SIZE + 1;
 	int assemblerGridSize = (model->numOfFaces - 1) / VERTEX_SHADER_BLOCK_SIZE + 1;
 	int primitiveCount = model->numOfFaces;
 
 	VertexShader << <vertexShaderGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (model->vertexBufferIn, model->vertexBufferOut, SceneParams.Transformation, model->numOfVertices);
-	Assembler << <assemblerGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (model->vertexBufferOut, model->primitivesBuffer, model->indexBuffer, model->numOfFaces, SceneParams.CameraPosition, true, Rasterizer.Width, Rasterizer.Height);
+	Assembler << <assemblerGridSize, VERTEX_SHADER_BLOCK_SIZE >> > (model->vertexBufferOut, model->primitivesBuffer, model->indexBuffer, model->numOfFaces, SceneParams.CameraPosition, SceneParams.BackCulling, Rasterizer.Width, Rasterizer.Height);
 
-	primitiveCount = Compact(model->numOfFaces, Rasterizer.CompactionOutput, model->primitivesBuffer);
-	//cudaMemcpy(model->primitivesBuffer, compactionOutput, primitiveCount * sizeof(Triangle), cudaMemcpyDeviceToDevice);
+	if (SceneParams.BackCulling != BackCullingNone)
+	{
+		primitiveCount = Compact(model->numOfFaces, Rasterizer.CompactionOutput, model->primitivesBuffer);
+		cudaMemcpy(model->primitivesBuffer, Rasterizer.CompactionOutput, primitiveCount * sizeof(Triangle), cudaMemcpyDeviceToDevice);
+	}
 
-	RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (Rasterizer.CompactionOutput, Rasterizer.DepthBuffer, Rasterizer.FragmentBuffer, Rasterizer.Width);
-	RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (Rasterizer.CompactionOutput, Rasterizer.DepthBuffer, Rasterizer.FragmentBuffer, Rasterizer.Width);
-
-	//RasterizeWireframe<< <numOfFaces, 3 >> > (primitivesBuffer, depth, fragmentBuffer, width, height, numOfFaces);
+	if (SceneParams.RenderMode == RenderModeWireframe)
+	{
+		RasterizeWireframe << <primitiveCount, 3 >> > (model->primitivesBuffer, Rasterizer.DepthBuffer, Rasterizer.FragmentBuffer, Rasterizer.Width, Rasterizer.Height);
+	}
+	else if (SceneParams.RenderMode == RenderModeTriangles)
+	{
+		RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (model->primitivesBuffer, Rasterizer.DepthBuffer, Rasterizer.FragmentBuffer, Rasterizer.Width, NULL);
+		//RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (Rasterizer.CompactionOutput, Rasterizer.DepthBuffer, Rasterizer.FragmentBuffer, Rasterizer.Width, tex->Tex);
+	}
+	else 
+	{
+		RasterizeTriangle << <primitiveCount, dim3(RASTERIZER_BLOCK_SIZE, RASTERIZER_BLOCK_SIZE) >> > (model->primitivesBuffer, Rasterizer.DepthBuffer, Rasterizer.FragmentBuffer, Rasterizer.Width, tex->Tex);
+	}
 }
 
 

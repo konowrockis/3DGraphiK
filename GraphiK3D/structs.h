@@ -56,3 +56,9 @@ struct RasterizerModel
 	VertexShaderOut* vertexBufferOut;
 	Triangle* primitivesBuffer;
 };
+
+struct Texture {
+	cudaArray* cuArray;
+	cudaTextureObject_t Tex;
+};
+

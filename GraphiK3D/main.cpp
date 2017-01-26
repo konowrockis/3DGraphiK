@@ -17,8 +17,8 @@
 #include "ModelLoader.h"
 #include <Windows.h>
 
-int width = 640;
-int height = 480;
+int width = 1900;
+int height = 1000;
 bool isLeftMousePressed = false;
 bool isRightMousePressed = false;
 bool isMiddleMousePressed = false;
@@ -32,10 +32,123 @@ glm::mat4x4 ViewMatrix;
 glm::vec4 lightPosition = glm::vec4(0, 0, -30, 1);
 glm::quat lightRotation;
 
+#define MAX_MODELS 3
+#define MAX_TEXTURES 3
+RasterizerModel* Models[MAX_MODELS];
+Texture* Textures[MAX_TEXTURES];
+int currentModel, currentTexture;
+
+static void GetColor(float3* color)
+{
+	CHOOSECOLOR cc;                 // common dialog box structure 
+	static COLORREF acrCustClr[16]; // array of custom colors 
+	static DWORD rgbCurrent;        // initial color selection
+
+	rgbCurrent =
+		((int)(color->x * 255) << 16) |
+		((int)(color->y * 255) << 8) |
+		(int)(color->z * 255);
+
+	ZeroMemory(&cc, sizeof(cc));
+	cc.lStructSize = sizeof(cc);
+	cc.hwndOwner = NULL;
+	cc.lpCustColors = (LPDWORD)acrCustClr;
+	cc.rgbResult = rgbCurrent;
+	cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+
+	if (ChooseColor(&cc) == TRUE)
+	{
+		color->x = (float)((cc.rgbResult >> 16) & 0xFF) / 255.f;
+		color->y = (float)((cc.rgbResult >> 8) & 0xFF) / 255.f;
+		color->z = (float)(cc.rgbResult & 0xFF) / 255.f;
+	}
+}
+
+static void updateTexts()
+{
+	TextLine line;
+	if (SceneParams.IsHelpEnabled)
+	{
+		if (SceneParams.BackCulling == BackCullingNone)
+			line.length = sprintf_s(line.text, 128, "c  Backface Culling    Disabled");
+		else if (SceneParams.BackCulling == BackCullingCW)
+			line.length = sprintf_s(line.text, 128, "c  Backface Culling    Clockwise");
+		else
+			line.length = sprintf_s(line.text, 128, "c  Backface Culling    Counter Clockwise");
+
+		SetLine(1, line);
+
+		if (SceneParams.RenderMode == RenderModeWireframe)
+			line.length = sprintf_s(line.text, 128, "r  Rendering Mode      Wireframe");
+		else if (SceneParams.RenderMode == RenderModeTriangles)
+			line.length = sprintf_s(line.text, 128, "r  Rendering Mode      Color");
+		else
+			line.length = sprintf_s(line.text, 128, "r  Rendering Mode      Texture");
+
+		SetLine(2, line);
+
+		if (SceneParams.RenderOutput == RenderOutputColor)
+			line.length = sprintf_s(line.text, 128, "o  Rendering Output    Color");
+		else if (SceneParams.RenderOutput == RenderOutputNormal)
+			line.length = sprintf_s(line.text, 128, "o  Rendering Output    Normal Buffer");
+		else
+			line.length = sprintf_s(line.text, 128, "o  Rendering Output    Z Buffer");
+
+		SetLine(3, line);
+
+		if (SceneParams.LightEnabled)
+			line.length = sprintf_s(line.text, 128, "l  Toggle Lightning    Enabled");
+		else
+			line.length = sprintf_s(line.text, 128, "l  Toggle Lightning    Disabled");
+
+		SetLine(4, line);
+
+		line.length = sprintf_s(line.text, 128, "a  Change Ambient Color");
+		SetLine(5, line);
+		line.length = sprintf_s(line.text, 128, "s  Change Specular Color");
+		SetLine(6, line);
+		line.length = sprintf_s(line.text, 128, "d  Change Diffuse Color");
+		SetLine(7, line);
+
+		line.length = sprintf_s(line.text, 128, "q+arrows  Change Ambient Constant    %f", SceneParams.LightAmbientConstant);
+		SetLine(8, line);
+		line.length = sprintf_s(line.text, 128, "w+arrows  Change Specular Constant   %f", SceneParams.LightSpecularConstant);
+		SetLine(9, line);
+		line.length = sprintf_s(line.text, 128, "e+arrows  Change Diffuse Constant    %f", SceneParams.LightDiffuseConstant);
+		SetLine(10, line);
+		line.length = sprintf_s(line.text, 128, "z+arrows  Change Light Shininess     %i", SceneParams.LightShininess);
+		SetLine(11, line);
+
+		line.length = sprintf_s(line.text, 128, "m  Change Model");
+		SetLine(12, line);
+		line.length = sprintf_s(line.text, 128, "m  Change Texture");
+		SetLine(13, line);
+		line.length = sprintf_s(line.text, 128, "F1 Toggle Help");
+		SetLine(14, line);
+		line.length = sprintf_s(line.text, 128, "LMB + Move  Rotate Model");
+		SetLine(15, line);
+		line.length = sprintf_s(line.text, 128, "MMB + Move  Move Light");
+		SetLine(16, line);
+		line.length = sprintf_s(line.text, 128, "RMB + Move  Move Model");
+		SetLine(17, line);
+	}
+	else
+	{
+		line.length = 0;
+
+		for (int i = 1; i < 16; i++)
+		{
+			SetLine(i, line);
+		}
+	}
+}
+
 static void error_callback(int error, const char* description)
 {
 	fprintf(stderr, "Error: %s\n", description);
 }
+
+bool isQDown, isWDown, isEDown, isZDown;
 
 static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
@@ -47,23 +160,164 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
 		}
 		else if (key == GLFW_KEY_SPACE)
 		{
-			CHOOSECOLOR cc;                 // common dialog box structure 
-			static COLORREF acrCustClr[16]; // array of custom colors 
-			HBRUSH hbrush;                  // brush handle
-			static DWORD rgbCurrent;        // initial color selection
+			
+		}
+		else if (key == GLFW_KEY_F1)
+		{
+			SceneParams.IsHelpEnabled = !SceneParams.IsHelpEnabled;
+			updateTexts();
+		}
+		else if (key == GLFW_KEY_C)
+		{
+			if (SceneParams.BackCulling == BackCullingNone)
+				SceneParams.BackCulling = BackCullingCW;
+			else if (SceneParams.BackCulling == BackCullingCW)
+				SceneParams.BackCulling = BackCullingCCW;
+			else
+				SceneParams.BackCulling = BackCullingNone;
 
-			ZeroMemory(&cc, sizeof(cc));
-			cc.lStructSize = sizeof(cc);
-			cc.hwndOwner = NULL;
-			cc.lpCustColors = (LPDWORD)acrCustClr;
-			cc.rgbResult = rgbCurrent;
-			cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+			updateTexts();
+		}
+		else if (key == GLFW_KEY_R)
+		{
+			if (SceneParams.RenderMode == RenderModeWireframe)
+				SceneParams.RenderMode = RenderModeTriangles;
+			else if (SceneParams.RenderMode == RenderModeTriangles)
+				SceneParams.RenderMode = RenderModeTexture;
+			else
+				SceneParams.RenderMode = RenderModeWireframe;
 
-			if (ChooseColor(&cc) == TRUE)
+			updateTexts();
+		}
+		else if (key == GLFW_KEY_O)
+		{
+			if (SceneParams.RenderOutput == RenderOutputColor)
+				SceneParams.RenderOutput = RenderOutputNormal;
+			else if (SceneParams.RenderOutput == RenderOutputNormal)
+				SceneParams.RenderOutput = RenderOutputZBuffer;
+			else
+				SceneParams.RenderOutput = RenderOutputColor;
+
+			updateTexts();
+		}
+		else if (key == GLFW_KEY_L)
+		{
+			SceneParams.LightEnabled = !SceneParams.LightEnabled;
+
+			updateTexts();
+		}
+		else if (key == GLFW_KEY_A)
+		{
+			GetColor(&SceneParams.LightAmbientColor);
+		}
+		else if (key == GLFW_KEY_D)
+		{
+			GetColor(&SceneParams.LightDiffuseColor);
+		}
+		else if (key == GLFW_KEY_S)
+		{
+			GetColor(&SceneParams.LightSpecularColor);
+		}
+		else if (key == GLFW_KEY_Q)
+		{
+			isQDown = true;
+		}
+		else if (key == GLFW_KEY_W)
+		{
+			isWDown = true;
+		}
+		else if (key == GLFW_KEY_E)
+		{
+			isEDown = true;
+		}
+		else if (key == GLFW_KEY_Z)
+		{
+			isZDown = true;
+		}
+		else if (key == GLFW_KEY_UP)
+		{
+			if (isQDown)
 			{
-				hbrush = CreateSolidBrush(cc.rgbResult);
-				rgbCurrent = cc.rgbResult;
+				if (SceneParams.LightAmbientConstant < 1.f)
+					SceneParams.LightAmbientConstant += 0.1f;
 			}
+			else if (isWDown)
+			{
+				if (SceneParams.LightSpecularConstant < 1.f)
+					SceneParams.LightSpecularConstant += 0.1f;
+			}
+			else if (isEDown)
+			{
+				if (SceneParams.LightDiffuseConstant < 1.f)
+					SceneParams.LightDiffuseConstant += 0.1f;
+			}
+			else if (isZDown)
+			{
+				SceneParams.LightShininess++;
+			}
+
+			updateTexts();
+		}
+		else if (key == GLFW_KEY_DOWN)
+		{
+			if (isQDown)
+			{
+				if (SceneParams.LightAmbientConstant > 0.f)
+					SceneParams.LightAmbientConstant -= 0.1f;
+			}
+			else if (isWDown)
+			{
+				if (SceneParams.LightSpecularConstant > 0.f)
+					SceneParams.LightSpecularConstant -= 0.1f;
+			}
+			else if (isEDown)
+			{
+				if (SceneParams.LightDiffuseConstant > 0.f)
+					SceneParams.LightDiffuseConstant -= 0.1f;
+			}
+			else if (isZDown)
+			{
+				if (SceneParams.LightShininess > 0)
+					SceneParams.LightShininess--;
+			}
+
+			updateTexts();
+		}
+		else if (key == GLFW_KEY_M)
+		{
+			currentModel = (currentModel + 1) % MAX_MODELS;
+
+			if (currentModel = 0)
+			{
+				translation.z = -1;
+			}
+			else
+			{
+				translation.z = 1;
+			}
+		}
+		else if (key == GLFW_KEY_T)
+		{
+			currentTexture = (currentTexture + 1) % MAX_TEXTURES;
+		}
+	}
+	else if (action == GLFW_RELEASE)
+	{
+		if (key == GLFW_KEY_Q)
+		{
+			isQDown = false;
+		}
+		else if (key == GLFW_KEY_W)
+		{
+			isWDown = false;
+		}
+		else if (key == GLFW_KEY_E)
+		{
+			isEDown = false;
+		}
+		else if (key == GLFW_KEY_Z)
+		{
+			isZDown = false;
 		}
 	}
 }
@@ -73,7 +327,7 @@ static void mouseMoveCallback(GLFWwindow *window, double x, double y)
 	if (isLeftMousePressed) 
 	{
 		float easingFactor = 30;
-		rotation = glm::quat(glm::vec3((lastMouseY - y) / easingFactor, (lastMouseX - x) / easingFactor, 0)) * rotation;
+		rotation = glm::quat(glm::vec3((lastMouseY - y) / easingFactor, (x - lastMouseX) / easingFactor, 0)) * rotation;
 	}
 	else if (isRightMousePressed) 
 	{
@@ -99,7 +353,7 @@ static void mouseMoveCallback(GLFWwindow *window, double x, double y)
 	else if (isMiddleMousePressed) 
 	{
 		float easingFactor = 50;
-		lightRotation = glm::quat(glm::vec3((y - lastMouseY) / easingFactor, (x - lastMouseX) / easingFactor, 0)) * lightRotation;
+		lightRotation = glm::quat(glm::vec3((y - lastMouseY) / easingFactor, (lastMouseX - x) / easingFactor, 0)) * lightRotation;
 	}
 
 	lastMouseX = x;
@@ -155,10 +409,208 @@ void initCuda()
 	glBindTexture(GL_TEXTURE_2D, 0);
 
 	Init();
-	Resize(width, height, texture);
+	Resize(width, height, texture);	
+}
+
+BYTE* ConvertBMPToRGBBuffer(BYTE* Buffer, int width, int height)
+{
+	// first make sure the parameters are valid
+	if ((NULL == Buffer) || (width == 0) || (height == 0))
+		return NULL;
+
+	// find the number of padding bytes
+
+	int padding = 0;
+	int scanlinebytes = width * 3;
+	while ((scanlinebytes + padding) % 4 != 0)     // DWORD = 4 bytes
+		padding++;
+	// get the padded scanline width
+	int psw = scanlinebytes + padding;
+
+	// create new buffer
+	BYTE* newbuf = new BYTE[width*height * 3];
+
+	// now we loop trough all bytes of the original buffer, 
+	// swap the R and B bytes and the scanlines
+	long bufpos = 0;
+	long newpos = 0;
+	for (int y = 0; y < height; y++)
+		for (int x = 0; x < 3 * width; x += 3)
+		{
+			newpos = y * 3 * width + x;
+			bufpos = (height - y - 1) * psw + x;
+
+			newbuf[newpos] = Buffer[bufpos + 2];
+			newbuf[newpos + 1] = Buffer[bufpos + 1];
+			newbuf[newpos + 2] = Buffer[bufpos];
+		}
+
+	return newbuf;
+}
+
+BYTE* LoadBMP(int* width, int* height, long* size, LPCTSTR bmpfile)
+{
+	// declare bitmap structures
+	BITMAPFILEHEADER bmpheader;
+	BITMAPINFOHEADER bmpinfo;
+	// value to be used in ReadFile funcs
+	DWORD bytesread;
+	// open file to read from
+	HANDLE file = CreateFile(bmpfile, GENERIC_READ, FILE_SHARE_READ,
+		NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+	if (NULL == file)
+		return NULL; // coudn't open file
+
+
+					 // read file header
+	if (ReadFile(file, &bmpheader, sizeof(BITMAPFILEHEADER), &bytesread, NULL) == false)
+	{
+		CloseHandle(file);
+		return NULL;
+	}
+
+	//read bitmap info
+
+	if (ReadFile(file, &bmpinfo, sizeof(BITMAPINFOHEADER), &bytesread, NULL) == false)
+	{
+		CloseHandle(file);
+		return NULL;
+	}
+
+	// check if file is actually a bmp
+	if (bmpheader.bfType != 'MB')
+	{
+		CloseHandle(file);
+		return NULL;
+	}
+
+	// get image measurements
+	*width = bmpinfo.biWidth;
+	*height = abs(bmpinfo.biHeight);
+
+	// check if bmp is uncompressed
+	if (bmpinfo.biCompression != BI_RGB)
+	{
+		CloseHandle(file);
+		return NULL;
+	}
+
+	// check if we have 24 bit bmp
+	if (bmpinfo.biBitCount != 24)
+	{
+		CloseHandle(file);
+		return NULL;
+	}
+
+
+	// create buffer to hold the data
+	*size = bmpheader.bfSize - bmpheader.bfOffBits;
+	BYTE* Buffer = new BYTE[*size];
+	// move file pointer to start of bitmap data
+	SetFilePointer(file, bmpheader.bfOffBits, NULL, FILE_BEGIN);
+	// read bmp data
+	if (ReadFile(file, Buffer, *size, &bytesread, NULL) == false)
+	{
+		delete[] Buffer;
+		CloseHandle(file);
+		return NULL;
+	}
+
+	// everything successful here: close file and return buffer
+
+	CloseHandle(file);
+
+	return Buffer;
+}
+
+Texture* LoadTextureFromFile(LPCTSTR bmpfile)
+{
+	TCHAR  buffer[256] = TEXT("");
+	TCHAR** lppPart = { NULL };
+	GetFullPathName(bmpfile, 256, buffer, lppPart);
+
+	int width, height;
+	long size;
+	BYTE* buf = LoadBMP(&width, &height, &size, buffer);
+	buf = ConvertBMPToRGBBuffer(buf, width, height);
+
+	float* tex = new float[height * width * 4];
+	srand(time(NULL));
+
+	for (int y = 0; y < height; y++)
+	{
+		for (int x = 0; x < width; x++)
+		{
+			float r = (float)(buf[(y * width + x) * 3]) / 255;
+			float g = (float)(buf[(y * width + x) * 3 + 1]) / 255;
+			float b = (float)(buf[(y * width + x) * 3 + 2]) / 255;
+
+			tex[(y * width + x) * 4] = b;
+			tex[(y * width + x) * 4 + 1] = g;
+			tex[(y * width + x) * 4 + 2] = r;
+			tex[(y * width + x) * 4 + 3] = 0;
+		}
+	}
+
+	return LoadTexture(width, height, tex);
 }
 
 time_t seconds;
+static int fpstracker = 0;
+static float fps = 0;
+
+void updateFps()
+{
+	time_t seconds2 = time(NULL);
+
+	fpstracker++;
+	if (seconds2 - seconds >= 1) 
+	{
+		fps = (float)fpstracker / (seconds2 - seconds);
+		fpstracker = 0;
+		seconds = seconds2;
+
+		TextLine line;
+		line.length = sprintf_s(line.text, 128, "Current fps: %f", fps);
+		SetLine(0, line);
+	}
+}
+
+void initDefaults()
+{
+	SceneParams.BackCulling = BackCullingNone;
+	SceneParams.RenderMode = RenderModeTriangles;
+	SceneParams.RenderOutput = RenderOutputColor;
+
+	SceneParams.LightEnabled = true;
+	SceneParams.LightDiffuseColor.x = 1.f;
+	SceneParams.LightDiffuseColor.y = 1.f;
+	SceneParams.LightDiffuseColor.z = 1.f;
+
+	SceneParams.LightSpecularColor.x = 1.f;
+	SceneParams.LightSpecularColor.y = 1.f;
+	SceneParams.LightSpecularColor.z = 1.f;
+
+	SceneParams.LightAmbientColor.x = 1.f;
+	SceneParams.LightAmbientColor.y = 1.f;
+	SceneParams.LightAmbientColor.z = 1.f;
+
+	SceneParams.LightAmbientConstant = 0.0;
+	SceneParams.LightSpecularConstant = 0.5;
+	SceneParams.LightDiffuseConstant = 0.5;
+
+	SceneParams.LightShininess = 127;
+
+	SceneParams.IsHelpEnabled = true;
+
+	Models[0] = CreateModel(ModelLoader::LoadModel("Assets\\teapot.off"));
+	Models[1] = CreateModel(ModelLoader::LoadModel("Assets\\mushroom.off"));
+	Models[2] = CreateModel(ModelLoader::LoadModel("Assets\\test.off"));
+
+	Textures[0] = LoadTextureFromFile("..\\Debug\\Assets\\texture.bmp");
+	Textures[1] = LoadTextureFromFile("..\\Debug\\Assets\\texture2.bmp");
+	Textures[2] = LoadTextureFromFile("..\\Debug\\Assets\\texture3.bmp");
+}
 
 int main()
 {
@@ -192,54 +644,50 @@ int main()
 	ViewMatrix = getViewMatrix();
 
 	seconds = time(NULL);
-	int fpstracker = 0;
-	float fps = 0;
-
+	
 	glDisable(GL_DEPTH_TEST);
 	glDisable(GL_LIGHTING);
 
 	glBindTexture(GL_TEXTURE_2D, texture);
 	glEnable(GL_TEXTURE_2D);
 
-	RasterizerModel* g = CreateModel(ModelLoader::LoadModel("Assets\\mushroom.off"));
-	RasterizerModel* m = CreateModel(ModelLoader::LoadModel("Assets\\teapot.off"));
+	initDefaults();
+	updateTexts();
 
 	while (!glfwWindowShouldClose(window)) 
 	{
-		time_t seconds2 = time(NULL);
-
-		fpstracker++;
-		if (seconds2 - seconds >= 1) {
-
-			fps = fpstracker / (seconds2 - seconds);
-			fpstracker = 0;
-			seconds = seconds2;
-
-			printf("%f\n", fps);
-		}
+		updateFps();
 
 		SetTransformation(glm::translate(ViewMatrix, glm::vec3(translation)) * glm::toMat4(rotation));
 		SetCameraPosition(-translation * glm::toMat4(rotation));
 		SetLightPosition(lightPosition * glm::toMat4(lightRotation));
 
 		Begin();
-		DrawModel(m);
+		DrawModel(Models[currentModel], Textures[currentTexture]);
 
 		End();
 
 		glBegin(GL_QUADS);
-		glTexCoord2f(1.0, 1.0); glVertex3f(-1.0, -1.0, 0.5);
-		glTexCoord2f(0.0, 1.0); glVertex3f(1.0, -1.0, 0.5);
-		glTexCoord2f(0.0, 0.0); glVertex3f(1.0, 1.0, 0.5);
-		glTexCoord2f(1.0, 0.0); glVertex3f(-1.0, 1.0, 0.5);
+		glTexCoord2f(0.0, 1.0); glVertex3f(-1.0, -1.0, 0.5);
+		glTexCoord2f(1.0, 1.0); glVertex3f(1.0, -1.0, 0.5);
+		glTexCoord2f(1.0, 0.0); glVertex3f(1.0, 1.0, 0.5);
+		glTexCoord2f(0.0, 0.0); glVertex3f(-1.0, 1.0, 0.5);
 		glEnd();
 
 		glfwSwapBuffers(window);
 		glfwPollEvents();
 	}
 
-	FreeModel(m);
-	FreeModel(g);
+	for (int i = 0; i < MAX_MODELS; i++) 
+	{
+		FreeModel(Models[i]);
+	}
+
+	for (int i = 0; i < MAX_TEXTURES; i++)
+	{
+		FreeTexture(Textures[i]);
+	}
+	
 	FreeRasterizer();
 
 	glfwDestroyWindow(window);

@@ -155,6 +155,7 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
     <CudaCompile Include="stream_compaction.cu" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="font.h" />
     <ClInclude Include="ModelLoader.h" />
     <ClInclude Include="rasterizer.h" />
     <ClInclude Include="stream_compaction.h" />
@@ -186,6 +187,17 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
     <None Include="Assets\test.off">
       <DeploymentContent>true</DeploymentContent>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="Assets\texture.bmp">
+      <DeploymentContent>true</DeploymentContent>
+    </Image>
+    <Image Include="Assets\texture2.bmp">
+      <DeploymentContent>true</DeploymentContent>
+    </Image>
+    <Image Include="Assets\texture3.bmp">
+      <DeploymentContent>true</DeploymentContent>
+    </Image>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
